@@ -1,7 +1,10 @@
+import 'dart:io';
+
 import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 
 import 'services/audio_handler.dart';
+import 'services/edge_bridge.dart';
 import 'services/library.dart';
 import 'services/reader.dart';
 import 'services/voice_store.dart';
@@ -15,6 +18,12 @@ Future<void> main() async {
   await Future.wait([store.init(), library.init()]);
   final reader = Reader(store, library);
   await reader.init();
+  if (Platform.isAndroid) {
+    final edge = EdgeBridge(library);
+    edge.onPosition = reader.syncPosition;
+    reader.edge = edge;
+    await edge.init();
+  }
 
   // Notifica e comandi dalla schermata di blocco; tiene viva la lettura a
   // schermo spento. Se non parte, l'app funziona lo stesso.

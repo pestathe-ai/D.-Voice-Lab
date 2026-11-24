@@ -215,7 +215,7 @@ class MiniPlayer extends StatelessWidget {
                     ),
                     IconButton(
                       iconSize: 36,
-                      onPressed: reader.togglePlay,
+                      onPressed: () => startListening(context, reader),
                       icon: Icon(playing ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded),
                       color: Brand.orange,
                     ),
@@ -308,4 +308,40 @@ Future<String?> pickLanguage(BuildContext context, String current) {
       ),
     ),
   );
+}
+
+/// Avvia o mette in pausa la lettura. Con le voci Microsoft, la prima volta
+/// spiega come far partire "Leggi ad alta voce" in Edge.
+Future<void> startListening(BuildContext context, Reader reader) async {
+  if (reader.voice?.isEdge == true && !reader.edgeHintShown) {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Ascolto con Microsoft Edge'),
+        content: const Text(
+          'Il libro si apre in Edge, da dove eri arrivato.\n\n'
+          '1. In Edge tocca il menu ⋯ in basso.\n'
+          '2. Tocca "Leggi ad alta voce".\n'
+          '3. La prima volta scegli una voce italiana (ad esempio Isabella o Diego).\n\n'
+          'Quando hai finito tocca "Torna a D. Voce": il segno di dove sei arrivato viene salvato.',
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Annulla')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Apri in Edge')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    await reader.markEdgeHintShown();
+  }
+  await reader.togglePlay();
+  if (reader.edgeMissing && context.mounted) {
+    reader.clearError();
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: const Text('Per le voci Microsoft serve l\'app Microsoft Edge.'),
+        action: SnackBarAction(label: 'Installa', onPressed: () => reader.edge?.openStore()),
+      ));
+  }
 }

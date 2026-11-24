@@ -31,8 +31,17 @@ perms = [
 ]
 add = ''.join(f'    <uses-permission android:name="{x}"/>\n' for x in perms if x not in s)
 s = s.replace('<application', add + '    <application', 1)
-# L'attività principale deve condividere il motore Flutter con il servizio audio.
-s = re.sub(r'android:name="\.MainActivity"', 'android:name="com.ryanheise.audioservice.AudioServiceActivity"', s, count=1)
+# Link "Torna a D. Voce" (dvoce://…) dalla pagina aperta in Edge. Il
+# deep linking automatico di Flutter va spento: i link li gestisce l'app.
+if 'android:scheme="dvoce"' not in s:
+    s = s.replace('</activity>', '''    <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="dvoce" />
+            </intent-filter>
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
+        </activity>''', 1)
 service = '''
         <service android:name="com.ryanheise.audioservice.AudioService"
             android:foregroundServiceType="mediaPlayback"
@@ -62,16 +71,11 @@ open(p, 'w').write(s)
 PY
 grep -n "uses-permission\|android:label\|AudioService\|tools" android/app/src/main/AndroidManifest.xml || true
 
-# La MainActivity generata non serve più (si usa quella di audio_service),
-# ma la si fa comunque estendere AudioServiceActivity per sicurezza.
-for f in $(find android/app/src/main -name 'MainActivity.kt' -o -name 'MainActivity.java'); do
-  if [[ "$f" == *.kt ]]; then
-    sed -i 's/import io.flutter.embedding.android.FlutterActivity/import com.ryanheise.audioservice.AudioServiceActivity/; s/: FlutterActivity()/: AudioServiceActivity()/' "$f"
-  else
-    sed -i 's/import io.flutter.embedding.android.FlutterActivity;/import com.ryanheise.audioservice.AudioServiceActivity;/; s/extends FlutterActivity/extends AudioServiceActivity/' "$f"
-  fi
-  cat "$f"
-done
+# MainActivity: servizio audio a schermo spento + ponte con Microsoft Edge.
+MA=$(find android/app/src/main -name 'MainActivity.kt' | head -1)
+PKG=$(grep -m1 '^package ' "$MA" | awk '{print $2}')
+sed "s/__PACKAGE__/$PKG/" tool/android/MainActivity.kt > "$MA"
+echo "MainActivity: $MA ($PKG)"
 
 # --- iOS (solo su macOS) ---------------------------------------------------
 if [[ "$(uname)" == "Darwin" ]]; then

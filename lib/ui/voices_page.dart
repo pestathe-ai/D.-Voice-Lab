@@ -55,6 +55,15 @@ class _VoicesPageState extends State<VoicesPage> {
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
             children: [
+              if (reader.edge != null) ...[
+                Text(
+                  'Consigliata',
+                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 8),
+                _VoiceTile(choice: VoiceChoice.edge(), reader: reader),
+                const SizedBox(height: 24),
+              ],
               Text(
                 'Voci del telefono · ${languageName(lang)}',
                 style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
@@ -265,7 +274,9 @@ class _VoiceTile extends StatelessWidget {
     final selected = reader.voice?.id == choice.id;
     final previewing = reader.previewingVoiceId == choice.id;
     final IconData icon;
-    if (system != null) {
+    if (choice.isEdge) {
+      icon = Icons.auto_awesome_rounded;
+    } else if (system != null) {
       icon = system!.network ? Icons.cloud_outlined : Icons.phone_android_rounded;
     } else {
       icon = choice.offline?.gender == VoiceGender.female ? Icons.face_3_outlined : Icons.face_outlined;
@@ -297,11 +308,12 @@ class _VoiceTile extends StatelessWidget {
                 ],
               ),
             ),
-            IconButton(
-              tooltip: previewing ? 'Ferma' : 'Ascolta',
-              onPressed: previewing ? reader.stopPreview : () => reader.preview(choice),
-              icon: Icon(previewing ? Icons.stop_circle_outlined : Icons.play_circle_outline_rounded),
-            ),
+            if (!choice.isEdge)
+              IconButton(
+                tooltip: previewing ? 'Ferma' : 'Ascolta',
+                onPressed: previewing ? reader.stopPreview : () => reader.preview(choice),
+                icon: Icon(previewing ? Icons.stop_circle_outlined : Icons.play_circle_outline_rounded),
+              ),
             if (selected)
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 8),

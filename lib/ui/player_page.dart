@@ -534,7 +534,7 @@ class _Controls extends StatelessWidget {
           width: 78,
           height: 78,
           child: IconButton.filled(
-            onPressed: reader.togglePlay,
+            onPressed: () => startListening(context, reader),
             style: IconButton.styleFrom(
               backgroundColor: Brand.orange,
               foregroundColor: Brand.ink,

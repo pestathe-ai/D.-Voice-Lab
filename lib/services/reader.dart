@@ -15,6 +15,7 @@ import '../core/italian_normalizer.dart';
 import '../core/text_chunker.dart';
 import '../core/voice_catalog.dart';
 import '../core/wav.dart';
+import 'edge_bridge.dart';
 import 'library.dart';
 import 'system_tts.dart';
 import 'tts_worker.dart';
@@ -40,6 +41,14 @@ class VoiceChoice {
         system: v,
       );
 
+  /// Le voci Microsoft, tramite "Leggi ad alta voce" di Edge.
+  factory VoiceChoice.edge() => const VoiceChoice._(
+        id: kEdgeVoiceId,
+        name: 'Microsoft (Edge)',
+        description: 'Voci molto naturali (Isabella, Diego…). Il libro si apre in '
+            'Microsoft Edge, che lo legge con "Leggi ad alta voce". Gratis.',
+      );
+
   factory VoiceChoice.offline(VoiceInfo v) => VoiceChoice._(
         id: v.id,
         name: v.name,
@@ -54,7 +63,10 @@ class VoiceChoice {
   final VoiceInfo? offline;
 
   bool get isSystem => system != null;
+  bool get isEdge => id == kEdgeVoiceId;
 }
+
+const String kEdgeVoiceId = 'edge';
 
 /// Quante frasi preparare in anticipo mentre se ne ascolta una.
 const int _kAhead = 3;
@@ -78,6 +90,12 @@ class Reader extends ChangeNotifier {
   final AudioPlayer _player = AudioPlayer();
   final AudioPlayer _previewPlayer = AudioPlayer();
   final SystemTts _sys = SystemTts();
+
+  /// Ponte con Microsoft Edge (solo Android).
+  EdgeBridge? edge;
+
+  /// true se l'ultima apertura in Edge non è riuscita perché manca l'app.
+  bool edgeMissing = false;
   late Directory _tmp;
   late SharedPreferences _prefs;
   StreamSubscription<void>? _completeSub;
@@ -192,6 +210,7 @@ class Reader extends ChangeNotifier {
   /// Tutte le voci che si possono usare adesso: prima quelle del telefono,
   /// poi quelle scaricate nell'app.
   List<VoiceChoice> get availableVoices => [
+        if (edge != null) VoiceChoice.edge(),
         for (final v in systemVoices)
           if (v.installed) VoiceChoice.system(v),
         for (final v in store.installed) VoiceChoice.offline(v),
@@ -199,6 +218,7 @@ class Reader extends ChangeNotifier {
 
   VoiceChoice? _resolve(String? id) {
     if (id == null) return null;
+    if (id == kEdgeVoiceId) return edge == null ? null : VoiceChoice.edge();
     if (id.startsWith('sys:')) {
       for (final v in systemVoices) {
         if (v.id == id && v.installed) return VoiceChoice.system(v);
@@ -222,6 +242,7 @@ class Reader extends ChangeNotifier {
 
   /// Sceglie la voce per il libro aperto e la rende anche quella generale.
   Future<void> selectVoice(VoiceChoice v) async {
+    if (v.isEdge && active) await stop();
     final b = book;
     if (b != null) {
       b.voiceId = v.id;
@@ -468,6 +489,10 @@ class Reader extends ChangeNotifier {
       return;
     }
     error = null;
+    if (choice.isEdge) {
+      await _openInEdge();
+      return;
+    }
     final sysVoice = choice.system;
     if (sysVoice != null) {
       await _sysPlay(sysVoice);
@@ -858,6 +883,40 @@ class Reader extends ChangeNotifier {
   }
 
   // -------------------------------------------------------------------------
+  // Microsoft Edge
+
+  Future<void> _openInEdge() async {
+    final b = book;
+    final bridge = edge;
+    if (b == null || bridge == null) return;
+    _savePosition();
+    final ok = await bridge.open(b, chapterIndex, index);
+    edgeMissing = !ok;
+    if (!ok) {
+      error = 'Per le voci Microsoft serve l\'app Microsoft Edge: installala dal Play Store.';
+    }
+    notifyListeners();
+  }
+
+  bool get edgeHintShown => _prefs.getBool('edgeHint') ?? false;
+  Future<void> markEdgeHintShown() => _prefs.setBool('edgeHint', true);
+
+  /// Edge ci dice dove sei arrivato: si aggiorna il segnalibro.
+  void syncPosition(String bookId, int chapter, int chunk) {
+    if (book?.id != bookId || active || chapters.isEmpty) return;
+    final c = chapter.clamp(0, chapters.length - 1).toInt();
+    if (c != chapterIndex) {
+      _switchChapter(c, chunk: chunk);
+    } else {
+      index = chunk.clamp(0, chunks.length - 1).toInt();
+    }
+    final b = book!;
+    b.progress = bookProgress;
+    unawaited(library.update(b, notify: false));
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------------------------
   // Timer di spegnimento
 
   void setSleepTimer(Duration d) {
@@ -905,6 +964,7 @@ class Reader extends ChangeNotifier {
   // Prova delle voci
 
   Future<void> preview(VoiceChoice c) async {
+    if (c.isEdge) return;
     if (playing) await pause();
     await stopPreview();
     previewingVoiceId = c.id;

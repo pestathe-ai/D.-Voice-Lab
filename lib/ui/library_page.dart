@@ -74,7 +74,9 @@ class _LibraryPageState extends State<LibraryPage> {
 
   Future<void> _openBook(BookMeta meta, {bool autoplay = false}) async {
     if (autoplay) {
-      unawaited(reader.openBook(meta).then((_) => reader.play()));
+      unawaited(reader.openBook(meta).then((_) {
+        if (mounted) return startListening(context, reader);
+      }));
     } else {
       unawaited(reader.openBook(meta));
     }
@@ -235,7 +237,8 @@ class _LibraryPageState extends State<LibraryPage> {
     if (reader.book?.id != b.id) {
       await reader.openBook(b);
     }
-    await reader.togglePlay();
+    if (!mounted) return;
+    await startListening(context, reader);
   }
 
   Future<void> _bookMenu(BookMeta b) async {
