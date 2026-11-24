@@ -91,9 +91,19 @@ EdgePage buildEdgePage({
         nextChunk = para.chunk;
         break outer;
       }
-      final tag = i == 0 && para.text.length < 90 ? 'h3' : 'p';
-      body.writeln('<$tag data-c="${para.chapter}" data-k="${para.chunk}">'
-          '${_esc.convert(para.text)}</$tag>');
+      // Ogni frase è un blocco a sé: così i tasti avanti/indietro di Edge
+      // saltano di una frase e il segno si può mettere su ogni frase.
+      final sentences = splitIntoChunks(para.text);
+      final firstSentence = (c == chapter && i == startIdx)
+          ? (chunk - para.chunk).clamp(0, sentences.length - 1).toInt()
+          : 0;
+      final heading = i == 0 && para.text.length < 90 && sentences.length == 1;
+      for (var j = firstSentence; j < sentences.length; j++) {
+        final cls = j == firstSentence ? 's first' : 's';
+        final tag = heading ? 'h3' : 'p';
+        body.writeln('<$tag class="$cls" data-c="${para.chapter}" data-k="${para.chunk + j}">'
+            '${_esc.convert(sentences[j])}</$tag>');
+      }
       chars += para.text.length;
     }
   }
@@ -115,7 +125,8 @@ EdgePage buildEdgePage({
          font:19px/1.7 Georgia, "Noto Serif", serif; }
   h2 { font:700 24px/1.3 sans-serif; color:#f28c38; margin:40px 0 16px; }
   h3 { font:700 20px/1.4 sans-serif; margin:28px 0 12px; }
-  p { margin:0 0 16px; }
+  p { margin:0 0 4px; }
+  p.first, h3.first { margin-top:18px; }
   .end { margin-top:40px; text-align:center; font-family:sans-serif; }
   a { color:#f28c38; }
   [data-c] { cursor:pointer; }
@@ -211,7 +222,7 @@ $body$end
     n.classList.add('mark');
     pinned = n;
     save(n.getAttribute('data-c'), n.getAttribute('data-k'), true);
-    toast('Segno messo qui');
+    toast('Segno messo su questa frase');
     setTimeout(function () { pinned = null; }, 60000);
   });
   setInterval(report, 3000);

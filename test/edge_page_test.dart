@@ -59,4 +59,30 @@ void main() {
     expect(page.nextChapter, isNotNull);
     expect(page.html, contains('Continua l\'ascolto'));
   });
+
+  test('riparte dalla frase esatta, anche a metà paragrafo', () {
+    const long = [
+      Chapter(
+        title: 'Uno',
+        text: 'Prima frase abbastanza lunga da stare da sola nel lettore. '
+            'Seconda frase anche lei abbastanza lunga da stare da sola. '
+            'Terza frase che chiude il paragrafo in modo ordinato.',
+      ),
+    ];
+    final page = buildEdgePage(
+      bookId: '1',
+      positionAt: 0,
+      bookUrl: 'b',
+      bookTitle: 'L',
+      chapters: long,
+      chapter: 0,
+      chunk: 1,
+      posUrl: 'p',
+      returnUrl: 'r',
+      nextUrl: (c, k) => 'n',
+    );
+    expect(page.html, isNot(contains('Prima frase')));
+    expect(page.html, contains('data-k="1">Seconda frase'));
+    expect(page.html, contains('data-k="2">Terza frase'));
+  });
 }

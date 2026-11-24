@@ -2,7 +2,7 @@ name: d_voce
 description: "D. Voce – trasforma PDF, EPUB e testi in audiolibri con voci naturali, tutto offline."
 publish_to: 'none'
 
-version: 0.4.1+5
+version: 0.4.2+6
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
