@@ -8,6 +8,8 @@
 /// - le frasi molto brevi vengono unite alla successiva.
 library;
 
+import 'italian_normalizer.dart' show kNoSentenceEnd;
+
 const int kMaxChunk = 260;
 const int kMinChunk = 30;
 
@@ -28,10 +30,20 @@ List<String> splitIntoChunks(
     final para = raw.replaceAll(_spaces, ' ').trim();
     if (para.isEmpty) continue;
 
-    final pieces = <String>[];
+    // Un punto dopo un'abbreviazione ("Dott.", "pag.") non chiude la frase.
+    final sentences = <String>[];
     for (final sentence in para.split(_sentenceEnd)) {
       final s = sentence.trim();
       if (s.isEmpty) continue;
+      if (sentences.isNotEmpty && kNoSentenceEnd.hasMatch(sentences.last)) {
+        sentences[sentences.length - 1] = '${sentences.last} $s';
+      } else {
+        sentences.add(s);
+      }
+    }
+
+    final pieces = <String>[];
+    for (final s in sentences) {
       pieces.addAll(_splitLong(s, maxLen));
     }
 

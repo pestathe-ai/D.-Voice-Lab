@@ -1,32 +1,44 @@
 # D. Voce
 
-Un'app Android che legge ad alta voce i tuoi testi con voci italiane naturali,
-**tutto offline**: la voce gira direttamente sul telefono, senza account,
-senza abbonamenti e senza mandare il testo da nessuna parte.
+Un'app Android che trasforma i tuoi **PDF, EPUB e file di testo in audiolibri**,
+con voci naturali che funzionano **tutto offline**: la voce gira direttamente
+sul telefono, senza account, senza abbonamenti e senza mandare i tuoi libri
+da nessuna parte.
 
-Si basa su [Piper](https://github.com/OHF-Voice/piper1-gpl) (voci neurali)
-tramite [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) e
-[piper-phonemize](https://github.com/csukuangfj/piper-phonemize).
+Le voci si basano su [Supertonic 3](https://github.com/supertone-inc/supertonic)
+e [Piper](https://github.com/OHF-Voice/piper1-gpl), tramite
+[sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx).
 
-## Funzioni (v0.1)
+## Novità v0.2 – audiolibri
 
-- Scrivi, incolla o apri un file `.txt` e premi **Ascolta**.
-- Due voci italiane da scaricare una volta sola:
-  - **Paola** – femminile, qualità media (67 MB)
-  - **Riccardo** – maschile, qualità base, più leggera (26 MB)
-- Velocità regolabile da 0,6× a 1,6×.
-- Pausa, frase precedente/successiva, cursore per saltare a un punto.
-- **Salva audio**: crea un file WAV con tutta la lettura e lo condividi
-  (WhatsApp, Drive, email…).
-- Il testo resta salvato quando chiudi l'app.
+- **Libreria**: aggiungi libri PDF, EPUB o TXT (oppure incolla un testo).
+- **Capitoli automatici**: dall'indice del PDF o dell'EPUB, oppure dai titoli
+  "Capitolo 1", "Parte seconda", "IV"… Se non ce ne sono, il libro viene
+  diviso in parti da circa mezz'ora.
+- **Pulizia dei PDF**: via numeri di pagina e intestazioni ripetute, parole
+  spezzate dal trattino ricucite, paragrafi ricomposti.
+- **10 voci naturali** (5 femminili, 5 maschili) in un unico download da 129 MB,
+  che leggono anche in altre 30 lingue (inglese, spagnolo, francese, tedesco…).
+- **Italiano letto bene**: numeri, date, prezzi, orari, percentuali,
+  abbreviazioni (dott., pag., ecc.) e capitoli in numeri romani vengono letti
+  per esteso.
+- **Segnalibro automatico**: ogni libro riparte dalla frase dove eri rimasto.
+- Velocità da 0,75× a 2×, **timer di spegnimento** (minuti o fine capitolo),
+  frase e capitolo precedente/successivo.
+- **Ascolto a schermo spento** con i comandi nella notifica, nella schermata
+  di blocco e sulle cuffie.
 
 ## Limiti noti
 
-- Niente PDF ed ebook per ora (solo testo e `.txt`).
-- Con lo schermo spento o l'app in background Android può interrompere la lettura.
-- Le voci Piper sono buone ma non perfette: a volte sbagliano un accento,
-  soprattutto su nomi propri, sigle e parole straniere.
-- I file WAV sono grandi (circa 2,5 MB al minuto con Paola).
+- I PDF fatti di immagini (pagine fotografate o scansionate) non contengono
+  testo e non si possono leggere.
+- Tabelle, note a piè di pagina e impaginazioni a più colonne possono uscire
+  in ordine strano.
+- La voce viene preparata frase per frase sul telefono: sui telefoni meno
+  potenti può esserci una breve pausa tra una frase e l'altra. In quel caso
+  usa la qualità "Normale" o una voce leggera.
+- Le voci leggere (Paola, Riccardo) leggono solo in italiano.
+- Non legge i file protetti da DRM (ad esempio molti ebook comprati online).
 
 ## Come si installa
 
@@ -36,10 +48,12 @@ Scarica l'APK dall'ultima [release](../../releases/latest)
 ## Sviluppo
 
 Le cartelle `android/` e `ios/` non sono nel repository: le crea
-`tool/setup_platforms.sh` durante la build su GitHub Actions.
+`tool/setup_platforms.sh` durante la build su GitHub Actions. La CI prova
+anche le voci vere (estrazione, sintesi e campioni audio allegati alla release).
 
-Licenza: GPL-3.0 (richiesta dalla libreria espeak-ng usata per la pronuncia).
-Il carattere Sora è distribuito con licenza SIL OFL (`assets/fonts/OFL.txt`).
+Licenza: GPL-3.0 (richiesta dalla libreria espeak-ng usata per la pronuncia
+delle voci Piper). Il carattere Sora è distribuito con licenza SIL OFL
+(`assets/fonts/OFL.txt`).
 
 ---
 un'app Dom Studio

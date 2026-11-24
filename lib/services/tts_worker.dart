@@ -70,33 +70,96 @@ class TtsWorker {
     return res;
   }
 
-  /// Carica una voce (non fa nulla se è già quella caricata).
-  Future<void> load({
+  /// Carica una voce Piper (VITS). Non fa nulla se è già quella caricata.
+  Future<void> loadPiper({
     required String model,
     required String tokens,
     int threads = 2,
-  }) async {
-    if (_loadedModel == model) return;
-    _loadedModel = null;
-    final res = await _call({
-      'cmd': 'load',
-      'model': model,
-      'tokens': tokens,
-      'threads': threads,
-    });
-    sampleRate = res['sampleRate'] as int;
-    _loadedModel = model;
+  }) =>
+      _load(_piperSpec(model, tokens, threads));
+
+  /// Carica il pacchetto Supertonic contenuto in [dir].
+  Future<void> loadSupertonic({required String dir, int threads = 2}) =>
+      _load(_supertonicSpec(dir, threads));
+
+  static Map<String, Object?> _piperSpec(String model, String tokens, int threads) =>
+      {'key': model, 'engine': 'piper', 'model': model, 'tokens': tokens, 'threads': threads};
+
+  static Map<String, Object?> _supertonicSpec(String dir, int threads) =>
+      {'key': dir, 'engine': 'supertonic', 'dir': dir, 'threads': threads};
+
+  Future<void>? _loading;
+  String? _loadingKey;
+
+  Future<void> _load(Map<String, Object?> spec) async {
+    final key = spec['key'] as String;
+    if (_loadedModel == key) return;
+    if (_loadingKey == key && _loading != null) return _loading;
+    _loadingKey = key;
+    final future = () async {
+      final res = await _call({'cmd': 'load', 'spec': spec});
+      sampleRate = res['sampleRate'] as int;
+      _loadedModel = key;
+    }();
+    _loading = future;
+    try {
+      await future;
+    } finally {
+      if (_loadingKey == key) {
+        _loading = null;
+        _loadingKey = null;
+      }
+    }
   }
 
-  /// Genera l'audio a partire dai fonemi (una lista per frase).
-  Future<SynthResult> synth(
+  /// Voce Piper: genera l'audio a partire dai fonemi (una lista per frase).
+  /// Ogni richiesta porta con sé la voce da usare: se nel frattempo ne è
+  /// stata caricata un'altra (ad esempio per una prova), viene ricaricata.
+  Future<SynthResult> synthPhonemes(
     List<List<int>> codepoints, {
+    required String model,
+    required String tokens,
+    int threads = 2,
     double speed = 1.0,
-  }) async {
-    final res = await _call({'cmd': 'synth', 'cp': codepoints, 'speed': speed});
+  }) =>
+      _synth({
+        'cmd': 'synth',
+        'cp': codepoints,
+        'speed': speed,
+        'spec': _piperSpec(model, tokens, threads),
+      });
+
+  /// Voce Supertonic: genera l'audio direttamente dal testo.
+  Future<SynthResult> synthText(
+    String text, {
+    required String dir,
+    required int sid,
+    required String lang,
+    int threads = 2,
+    double speed = 1.0,
+    int steps = 6,
+  }) =>
+      _synth({
+        'cmd': 'synth',
+        'text': text,
+        'sid': sid,
+        'lang': lang,
+        'steps': steps,
+        'speed': speed,
+        'spec': _supertonicSpec(dir, threads),
+      });
+
+  Future<SynthResult> _synth(Map<String, Object?> msg) async {
+    final res = await _call(msg);
+    final rate = res['sampleRate'] as int;
+    final key = res['key'] as String?;
+    if (key != null) {
+      _loadedModel = key;
+      sampleRate = rate;
+    }
     final data = res['samples'] as TransferableTypedData;
     final samples = data.materialize().asFloat32List();
-    return SynthResult(samples, res['sampleRate'] as int);
+    return SynthResult(samples, rate);
   }
 
   void dispose() {
@@ -125,6 +188,57 @@ void _workerMain(SendPort toMain) {
 
   sherpa.OfflineTts? tts;
   var bindingsReady = false;
+  var isSupertonic = false;
+  String? loadedKey;
+
+  /// Carica la voce descritta da [spec] se non è già quella caricata.
+  int ensureLoaded(Map<String, Object?> spec) {
+    final key = spec['key'] as String;
+    final current = tts;
+    if (current != null && loadedKey == key) return current.sampleRate;
+    tts?.free();
+    tts = null;
+    loadedKey = null;
+    final threads = spec['threads'] as int;
+    final sherpa.OfflineTtsModelConfig model;
+    if (spec['engine'] == 'supertonic') {
+      final dir = spec['dir'] as String;
+      model = sherpa.OfflineTtsModelConfig(
+        supertonic: sherpa.OfflineTtsSupertonicModelConfig(
+          durationPredictor: '$dir/duration_predictor.int8.onnx',
+          textEncoder: '$dir/text_encoder.int8.onnx',
+          vectorEstimator: '$dir/vector_estimator.int8.onnx',
+          vocoder: '$dir/vocoder.int8.onnx',
+          ttsJson: '$dir/tts.json',
+          unicodeIndexer: '$dir/unicode_indexer.bin',
+          voiceStyle: '$dir/voice.bin',
+        ),
+        numThreads: threads,
+        debug: false,
+      );
+    } else {
+      model = sherpa.OfflineTtsModelConfig(
+        vits: sherpa.OfflineTtsVitsModelConfig(
+          model: spec['model'] as String,
+          tokens: spec['tokens'] as String,
+        ),
+        numThreads: threads,
+        debug: false,
+      );
+    }
+    final created = sherpa.OfflineTts(
+      sherpa.OfflineTtsConfig(model: model, maxNumSentences: 1),
+    );
+    final rate = created.sampleRate;
+    if (rate <= 0) {
+      created.free();
+      throw TtsException('Non riesco ad aprire questa voce. Prova a riscaricarla.');
+    }
+    tts = created;
+    loadedKey = key;
+    isSupertonic = spec['engine'] == 'supertonic';
+    return rate;
+  }
 
   rp.listen((dynamic raw) {
     final msg = raw as Map;
@@ -136,48 +250,51 @@ void _workerMain(SendPort toMain) {
       }
       final cmd = msg['cmd'] as String;
       if (cmd == 'load') {
-        tts?.free();
-        tts = null;
-        final created = sherpa.OfflineTts(
-          sherpa.OfflineTtsConfig(
-            model: sherpa.OfflineTtsModelConfig(
-              vits: sherpa.OfflineTtsVitsModelConfig(
-                model: msg['model'] as String,
-                tokens: msg['tokens'] as String,
-              ),
-              numThreads: msg['threads'] as int,
-              debug: false,
-            ),
-            maxNumSentences: 1,
-          ),
-        );
-        final rate = created.sampleRate;
-        if (rate <= 0) {
-          created.free();
-          throw TtsException('Non riesco ad aprire questa voce. Prova a riscaricarla.');
-        }
-        tts = created;
+        final rate = ensureLoaded(Map<String, Object?>.from(msg['spec'] as Map));
         toMain.send(<String, Object?>{'id': id, 'ok': true, 'sampleRate': rate});
       } else if (cmd == 'synth') {
+        final spec = msg['spec'];
+        if (spec is Map) ensureLoaded(Map<String, Object?>.from(spec));
         final engine = tts;
         if (engine == null) {
           throw TtsException('Nessuna voce caricata');
         }
-        final cp = <List<int>>[
-          for (final s in msg['cp'] as List)
-            if ((s as List).isNotEmpty) List<int>.from(s),
-        ];
         Float32List samples = Float32List(0);
         var rate = engine.sampleRate;
-        if (cp.isNotEmpty) {
-          final audio = engine.generateWithConfig(
-            text: '',
-            config: sherpa.OfflineTtsGenerationConfig(
-              speed: (msg['speed'] as num).toDouble(),
-              silenceScale: 0.2,
-              phonemeCodepoints: cp,
-            ),
-          );
+        final speed = (msg['speed'] as num).toDouble();
+        sherpa.GeneratedAudio? audio;
+        if (isSupertonic) {
+          final text = (msg['text'] as String?) ?? '';
+          if (text.trim().isNotEmpty) {
+            audio = engine.generateWithConfig(
+              text: text,
+              config: sherpa.OfflineTtsGenerationConfig(
+                sid: msg['sid'] as int,
+                speed: speed,
+                extra: {
+                  'lang': msg['lang'] as String,
+                  'num_steps': msg['steps'] as int,
+                },
+              ),
+            );
+          }
+        } else {
+          final cp = <List<int>>[
+            for (final s in (msg['cp'] as List?) ?? const [])
+              if ((s as List).isNotEmpty) List<int>.from(s),
+          ];
+          if (cp.isNotEmpty) {
+            audio = engine.generateWithConfig(
+              text: '',
+              config: sherpa.OfflineTtsGenerationConfig(
+                speed: speed,
+                silenceScale: 0.2,
+                phonemeCodepoints: cp,
+              ),
+            );
+          }
+        }
+        if (audio != null) {
           samples = audio.samples;
           if (audio.sampleRate > 0) rate = audio.sampleRate;
         }
@@ -185,6 +302,7 @@ void _workerMain(SendPort toMain) {
           'id': id,
           'ok': true,
           'sampleRate': rate,
+          'key': loadedKey,
           'samples': TransferableTypedData.fromList([samples]),
         });
       } else {

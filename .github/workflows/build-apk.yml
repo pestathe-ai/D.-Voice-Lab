@@ -87,18 +87,18 @@ jobs:
           export LD_LIBRARY_PATH="$PWD/build/linux/x64/debug/bundle/lib:${LD_LIBRARY_PATH:-}"
           mkdir -p samples
           status=0
-          for v in it_IT-riccardo-x_low it_IT-paola-medium; do
-            curl -sSL -o "/tmp/$v.tar.bz2" \
-              "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-$v.tar.bz2"
-            name=$(echo "$v" | cut -d- -f2)
-            if DVOCE_VOICE_ARCHIVE="/tmp/$v.tar.bz2" DVOCE_OUT="$PWD/samples/prova-$name.wav" \
-                flutter test test/engine_real_test.dart --reporter expanded 2>&1 | tee "real-$name.log"; then
-              res=$(grep -o 'DVOCE_RESULT.*' "real-$name.log" | tail -1)
-              echo "::notice title=voce-$name::OK $res"
+          for pack in supertonic3:sherpa-onnx-supertonic-3-tts-int8-2026-05-11 it_IT-paola-medium:vits-piper-it_IT-paola-medium; do
+            id=${pack%%:*}; folder=${pack#*:}
+            curl -sSL -o "/tmp/$folder.tar.bz2" \
+              "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$folder.tar.bz2"
+            if DVOCE_PACK_ARCHIVE="/tmp/$folder.tar.bz2" DVOCE_PACK_ID="$id" DVOCE_OUT_DIR="$PWD/samples" \
+                flutter test test/engine_real_test.dart --reporter expanded 2>&1 | tee "real-$id.log"; then
+              res=$(grep -o 'DVOCE_RESULT.*' "real-$id.log" | tr '\n' ' ')
+              echo "::notice title=voci-$id::OK $res"
             else
-              grep -n -i -E 'error|failed|exception|Expected|Actual|Which|reason|\.dart [0-9]+:[0-9]+|Invalid|load' "real-$name.log" | tail -30 \
+              grep -n -i -E 'error|failed|exception|Expected|Actual|Which|reason|\.dart [0-9]+:[0-9]+|Invalid|load|DVOCE_RESULT' "real-$id.log" | tail -30 \
                 | sed 's/%/%25/g' | awk 'BEGIN{ORS="%0A"} {print}' > err.txt
-              echo "::error title=voce-$name::$(cat err.txt)"
+              echo "::error title=voci-$id::$(cat err.txt)"
               status=1
             fi
           done
@@ -138,7 +138,7 @@ jobs:
           body: |
             Per quasi tutti i telefoni scarica **app-arm64-v8a-release.apk**.
             Telefoni molto vecchi: app-armeabi-v7a-release.apk.
-            I file prova-*.wav sono esempi delle voci generati durante la build.
+            I file prova-*.wav sono esempi delle voci (Elena, Andrea, Paola) generati durante la build.
           files: |
             build/app/outputs/flutter-apk/*-release.apk
             samples/*.wav

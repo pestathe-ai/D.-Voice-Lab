@@ -1,8 +1,8 @@
 name: d_voce
-description: "D. Voce – legge ad alta voce i tuoi testi con voci italiane, tutto offline."
+description: "D. Voce – trasforma PDF, EPUB e testi in audiolibri con voci naturali, tutto offline."
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 0.2.0+2
 
 environment:
   sdk: ">=3.10.0 <4.0.0"
@@ -17,8 +17,9 @@ dependencies:
   archive: ^4.0.7
   audioplayers: ^6.8.1
   file_picker: ^13.3.0
-  share_plus: ^13.3.1
   shared_preferences: ^2.3.0
+  pdfrx: '>=2.4.8 <4.0.0'
+  audio_service: ^0.18.17
 
 dev_dependencies:
   flutter_test:

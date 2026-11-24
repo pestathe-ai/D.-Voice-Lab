@@ -1,24 +1,50 @@
+import 'package:audio_service/audio_service.dart';
 import 'package:flutter/material.dart';
 
+import 'services/audio_handler.dart';
+import 'services/library.dart';
 import 'services/reader.dart';
 import 'services/voice_store.dart';
-import 'ui/home_page.dart';
+import 'ui/library_page.dart';
 import 'ui/theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   final store = VoiceStore();
-  await store.init();
-  final reader = Reader(store);
+  final library = Library();
+  await Future.wait([store.init(), library.init()]);
+  final reader = Reader(store, library);
   await reader.init();
-  runApp(DVoceApp(store: store, reader: reader));
+
+  // Notifica e comandi dalla schermata di blocco; tiene viva la lettura a
+  // schermo spento. Se non parte, l'app funziona lo stesso.
+  try {
+    await AudioService.init(
+      builder: () => DVoceAudioHandler(reader),
+      config: const AudioServiceConfig(
+        androidNotificationChannelId: 'dev.dvoce.d_voce.lettura',
+        androidNotificationChannelName: 'Lettura',
+        androidStopForegroundOnPause: true,
+      ),
+    );
+  } catch (e) {
+    debugPrint('AudioService non disponibile: $e');
+  }
+
+  runApp(DVoceApp(store: store, reader: reader, library: library));
 }
 
 class DVoceApp extends StatelessWidget {
-  const DVoceApp({super.key, required this.store, required this.reader});
+  const DVoceApp({
+    super.key,
+    required this.store,
+    required this.reader,
+    required this.library,
+  });
 
   final VoiceStore store;
   final Reader reader;
+  final Library library;
 
   @override
   Widget build(BuildContext context) {
@@ -27,7 +53,7 @@ class DVoceApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
-      home: HomePage(store: store, reader: reader),
+      home: LibraryPage(store: store, reader: reader, library: library),
     );
   }
 }

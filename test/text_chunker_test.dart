@@ -54,4 +54,13 @@ void main() {
     expect(c.every((x) => x.length <= 100), isTrue);
     expect(c.join(), url);
   });
+
+  test('non spezza dopo le abbreviazioni', () {
+    const t = 'Il dott. Rossi arrivò in ritardo, come sempre accadeva il lunedì mattina. '
+        'Poi andò a pag. 12 del registro, dove trovò quello che cercava.';
+    final c = splitIntoChunks(t);
+    expect(c, hasLength(2));
+    expect(c.first, startsWith('Il dott. Rossi arrivò'));
+    expect(c.last, startsWith('Poi andò a pag. 12'));
+  });
 }

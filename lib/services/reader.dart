@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
@@ -9,38 +10,67 @@ import 'package:path_provider/path_provider.dart';
 import 'package:piper_phonemize/piper_phonemize.dart' as piper;
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/book.dart';
+import '../core/italian_normalizer.dart';
 import '../core/text_chunker.dart';
 import '../core/voice_catalog.dart';
 import '../core/wav.dart';
+import 'library.dart';
 import 'tts_worker.dart';
 import 'voice_store.dart';
 
 enum ReaderState { idle, preparing, playing, paused }
 
 /// Quante frasi preparare in anticipo mentre se ne ascolta una.
-const int _kAhead = 2;
+const int _kAhead = 3;
 
-/// Legge il testo una frase alla volta: genera l'audio della frase
-/// corrente e intanto prepara le successive.
+/// Le voci naturali parlano un filo lente: a velocità "1×" si accelerano
+/// appena per avere il ritmo di un audiolibro.
+const double _kSupertonicBaseSpeed = 1.05;
+
+/// Qualità delle voci naturali: più passi = voce più pulita ma più lenta
+/// da preparare.
+enum VoiceQuality { normal, high }
+
+/// Il lettore: legge un libro una frase alla volta, genera in anticipo le
+/// frasi successive, passa da un capitolo all'altro e ricorda il punto.
 class Reader extends ChangeNotifier {
-  Reader(this.store);
+  Reader(this.store, this.library);
 
   final VoiceStore store;
+  final Library library;
   final TtsWorker _worker = TtsWorker();
   final AudioPlayer _player = AudioPlayer();
+  final AudioPlayer _previewPlayer = AudioPlayer();
   late Directory _tmp;
   late SharedPreferences _prefs;
   StreamSubscription<void>? _completeSub;
+  StreamSubscription<void>? _previewSub;
   Future<void>? _phonemizerInit;
 
   ReaderState state = ReaderState.idle;
-  List<String> chunks = const [];
-  int index = 0;
   String? error;
 
+  // Libro aperto
+  BookMeta? book;
+  List<Chapter> chapters = const [];
+  int chapterIndex = 0;
+  List<String> chunks = const [];
+  int index = 0;
+  bool loadingBook = false;
+
+  // Impostazioni
   String? _voiceId;
   double _speed = 1.0;
-  String draft = '';
+  VoiceQuality quality = VoiceQuality.normal;
+
+  // Timer di spegnimento
+  DateTime? sleepAt;
+  bool sleepAtChapterEnd = false;
+  Timer? _sleepTimer;
+
+  // Prova voce
+  String? previewingVoiceId;
 
   int _session = 0;
   int _playToken = 0;
@@ -48,18 +78,15 @@ class Reader extends ChangeNotifier {
   String? _pendingPath;
   bool _midChunk = false;
 
-  bool exporting = false;
-  double exportProgress = 0;
-  bool _exportCancel = false;
-
   bool get active => state != ReaderState.idle;
+  bool get playing => state == ReaderState.playing || state == ReaderState.preparing;
   double get speed => _speed;
 
   Future<void> init() async {
     _prefs = await SharedPreferences.getInstance();
     _voiceId = _prefs.getString('voice');
     _speed = _prefs.getDouble('speed') ?? 1.0;
-    draft = _prefs.getString('draft') ?? '';
+    quality = (_prefs.getString('quality') == 'high') ? VoiceQuality.high : VoiceQuality.normal;
     final t = await getTemporaryDirectory();
     _tmp = Directory(p.join(t.path, 'dvoce_audio'));
     if (_tmp.existsSync()) {
@@ -69,39 +96,73 @@ class Reader extends ChangeNotifier {
     }
     await _tmp.create(recursive: true);
     await _player.setReleaseMode(ReleaseMode.stop);
+    await _previewPlayer.setReleaseMode(ReleaseMode.stop);
     _completeSub = _player.onPlayerComplete.listen((_) => _onComplete());
+    _previewSub = _previewPlayer.onPlayerComplete.listen((_) {
+      previewingVoiceId = null;
+      notifyListeners();
+    });
   }
 
-  /// La voce scelta, se installata; altrimenti la prima installata.
-  VoiceInfo? get voice {
+  // -------------------------------------------------------------------------
+  // Voci e impostazioni
+
+  /// La voce generale scelta, se installata; altrimenti la migliore installata.
+  VoiceInfo? get defaultVoice {
     final chosen = voiceById(_voiceId);
     if (chosen != null && store.isInstalled(chosen)) return chosen;
+    final preferred = voiceById(kDefaultVoiceId);
+    if (preferred != null && store.isInstalled(preferred)) return preferred;
     final installed = store.installed;
     return installed.isEmpty ? null : installed.first;
   }
 
-  Future<void> selectVoice(VoiceInfo v) async {
-    if (v.id == _voiceId) return;
+  /// La voce con cui si legge il libro aperto.
+  VoiceInfo? get voice {
+    final own = voiceById(book?.voiceId);
+    if (own != null && store.isInstalled(own)) return own;
+    return defaultVoice;
+  }
+
+  Future<void> selectDefaultVoice(VoiceInfo v) async {
     _voiceId = v.id;
     await _prefs.setString('voice', v.id);
-    if (active) await stop();
+    _voiceChanged();
+  }
+
+  /// Sceglie la voce per il libro aperto (e la rende anche quella generale).
+  Future<void> selectVoice(VoiceInfo v) async {
+    final b = book;
+    if (b != null) {
+      b.voiceId = v.id;
+      unawaited(library.update(b, notify: false));
+    }
+    await selectDefaultVoice(v);
+  }
+
+  void _voiceChanged() {
+    if (active) _invalidateAhead();
     notifyListeners();
   }
 
   void setSpeed(double value) {
     _speed = value;
     _prefs.setDouble('speed', value);
-    if (active) {
-      // Le frasi già preparate hanno la velocità vecchia: si rifanno.
-      _cache.removeWhere((i, _) => i > index);
-      _prefetch(index, _session);
-    }
+    if (active) _invalidateAhead();
     notifyListeners();
   }
 
-  void saveDraft(String text) {
-    draft = text;
-    _prefs.setString('draft', text);
+  void setQuality(VoiceQuality q) {
+    quality = q;
+    _prefs.setString('quality', q == VoiceQuality.high ? 'high' : 'normal');
+    if (active) _invalidateAhead();
+    notifyListeners();
+  }
+
+  /// Le frasi già preparate con le impostazioni vecchie si rifanno.
+  void _invalidateAhead() {
+    _cache.removeWhere((i, _) => i > index);
+    _prefetch(index, _session);
   }
 
   void clearError() {
@@ -112,8 +173,7 @@ class Reader extends ChangeNotifier {
   // -------------------------------------------------------------------------
   // Motore
 
-  int get _threads =>
-      math.max(1, math.min(4, Platform.numberOfProcessors ~/ 2));
+  int get _threads => math.max(1, math.min(4, Platform.numberOfProcessors ~/ 2));
 
   Future<void> _ensurePhonemizer() {
     return _phonemizerInit ??= () async {
@@ -132,48 +192,156 @@ class Reader extends ChangeNotifier {
   }
 
   Future<void> _ensureEngine(VoiceInfo v) async {
+    if (v.engine == VoiceEngine.supertonic) {
+      await _worker.loadSupertonic(dir: store.packDir(v.pack), threads: _threads);
+    } else {
+      await _ensurePhonemizer();
+      await _worker.loadPiper(
+        model: store.modelPath(v),
+        tokens: store.tokensPath(v),
+        threads: _threads,
+      );
+    }
+  }
+
+  String get _lang => book?.lang ?? 'it';
+
+  Future<SynthResult> _synth(VoiceInfo v, String text, String lang) async {
+    final spoken = lang == 'it' ? normalizeItalian(text) : text;
+    if (v.engine == VoiceEngine.supertonic) {
+      return _worker.synthText(
+        spoken,
+        dir: store.packDir(v.pack),
+        threads: _threads,
+        sid: v.sid,
+        lang: lang,
+        speed: _speed * _kSupertonicBaseSpeed,
+        steps: quality == VoiceQuality.high ? 8 : 5,
+      );
+    }
     await _ensurePhonemizer();
-    await _worker.load(
+    final cp = piper.PiperPhonemize.phonemize(spoken, voice: kEspeakVoice)
+        .where((s) => s.isNotEmpty)
+        .toList();
+    if (cp.isEmpty) return SynthResult(Float32List(0), 0);
+    return _worker.synthPhonemes(
+      cp,
       model: store.modelPath(v),
       tokens: store.tokensPath(v),
       threads: _threads,
+      speed: _speed,
     );
   }
 
-  List<List<int>> _phonemize(String text) => piper.PiperPhonemize.phonemize(
-    text,
-    voice: kEspeakVoice,
-  ).where((s) => s.isNotEmpty).toList();
+  // -------------------------------------------------------------------------
+  // Libro
+
+  /// Apre un libro e si posiziona dove eri arrivato (senza partire).
+  Future<void> openBook(BookMeta meta) async {
+    if (book?.id == meta.id && chapters.isNotEmpty) return;
+    await stop();
+    loadingBook = true;
+    book = meta;
+    chapters = const [];
+    chunks = const [];
+    notifyListeners();
+    try {
+      chapters = await library.loadChapters(meta.id);
+    } catch (e) {
+      error = 'Non riesco ad aprire il libro: $e';
+      book = null;
+      loadingBook = false;
+      notifyListeners();
+      return;
+    }
+    loadingBook = false;
+    if (chapters.isEmpty) {
+      error = 'Il libro è vuoto.';
+      book = null;
+      notifyListeners();
+      return;
+    }
+    _loadChapter(meta.chapter.clamp(0, chapters.length - 1).toInt(), chunk: meta.chunk);
+    meta.lastOpened = DateTime.now();
+    unawaited(library.update(meta));
+    notifyListeners();
+  }
+
+  /// Chiude il libro (ad esempio se viene eliminato).
+  Future<void> closeBook() async {
+    await stop();
+    book = null;
+    chapters = const [];
+    chunks = const [];
+    index = 0;
+    notifyListeners();
+  }
+
+  void _loadChapter(int i, {int chunk = 0}) {
+    chapterIndex = i;
+    chunks = splitIntoChunks(chapters[i].text);
+    if (chunks.isEmpty) chunks = [chapters[i].title.isEmpty ? ' ' : chapters[i].title];
+    index = chunk.clamp(0, chunks.length - 1).toInt();
+  }
+
+  /// Avanzamento complessivo del libro, da 0 a 1.
+  double get bookProgress {
+    if (chapters.isEmpty) return 0;
+    var before = 0;
+    var total = 0;
+    for (var i = 0; i < chapters.length; i++) {
+      final len = chapters[i].text.length;
+      if (i < chapterIndex) before += len;
+      total += len;
+    }
+    if (total == 0) return 0;
+    final inChapter = chunks.isEmpty ? 0.0 : index / chunks.length;
+    return (before + inChapter * chapters[chapterIndex].text.length) / total;
+  }
+
+  /// Tempo di ascolto rimasto nel capitolo (stima).
+  Duration get chapterRemaining {
+    var chars = 0;
+    for (var i = index; i < chunks.length; i++) {
+      chars += chunks[i].length;
+    }
+    return Duration(seconds: (chars / 14 / _speed).round());
+  }
+
+  void _savePosition() {
+    final b = book;
+    if (b == null) return;
+    b.chapter = chapterIndex;
+    b.chunk = index;
+    b.progress = bookProgress;
+    b.lastOpened = DateTime.now();
+    unawaited(library.update(b, notify: false));
+  }
 
   // -------------------------------------------------------------------------
   // Lettura
 
-  Future<void> start(String text, {int from = 0, VoiceInfo? withVoice}) async {
-    await stop();
-    final v = withVoice ?? voice;
+  /// Parte (o riprende) dal punto corrente.
+  Future<void> play() async {
+    await stopPreview();
+    if (state == ReaderState.paused) return resume();
+    if (active) return;
+    if (book == null || chunks.isEmpty) return;
+    final v = voice;
     if (v == null) {
       error = 'Scarica prima una voce.';
       notifyListeners();
       return;
     }
-    final list = splitIntoChunks(text);
-    if (list.isEmpty) {
-      error = 'Non c\'è niente da leggere.';
-      notifyListeners();
-      return;
-    }
-    chunks = list;
-    index = from.clamp(0, list.length - 1).toInt();
     error = null;
     state = ReaderState.preparing;
     notifyListeners();
-
     final session = _session;
     try {
       await _ensureEngine(v);
     } catch (e) {
       if (session == _session) {
-        _reset();
+        _resetPlayback();
         error = 'Errore nel preparare la voce: $e';
         notifyListeners();
       }
@@ -183,16 +351,21 @@ class Reader extends ChangeNotifier {
     unawaited(_playIndex(index));
   }
 
-  /// Fa sentire la frase di prova di una voce.
-  Future<void> preview(VoiceInfo v) => start(v.sample, withVoice: v);
+  Future<void> togglePlay() async {
+    if (state == ReaderState.playing || state == ReaderState.preparing) {
+      await pause();
+    } else {
+      await play();
+    }
+  }
 
   Future<String?> _prepare(int i, int session) {
     return _cache.putIfAbsent(i, () async {
-      final cp = _phonemize(chunks[i]);
-      if (cp.isEmpty) return null;
-      final res = await _worker.synth(cp, speed: _speed);
+      final v = voice;
+      if (v == null) throw TtsException('Nessuna voce installata');
+      final res = await _synth(v, chunks[i], _lang);
       if (res.samples.isEmpty || session != _session) return null;
-      final path = p.join(_tmp.path, 's${session}_${i}_${_speed.toStringAsFixed(2)}.wav');
+      final path = p.join(_tmp.path, 's${session}_${chapterIndex}_${i}_${DateTime.now().microsecondsSinceEpoch}.wav');
       await File(path).writeAsBytes(encodeWav(res.samples, res.sampleRate));
       return path;
     });
@@ -208,11 +381,12 @@ class Reader extends ChangeNotifier {
     final token = ++_playToken;
     final session = _session;
     if (i >= chunks.length) {
-      await _finish();
+      await _chapterFinished();
       return;
     }
     index = i;
     _pendingPath = null;
+    _savePosition();
     notifyListeners();
 
     String? path;
@@ -220,7 +394,7 @@ class Reader extends ChangeNotifier {
       path = await _prepare(i, session);
     } catch (e) {
       if (token == _playToken && session == _session) {
-        _reset();
+        _resetPlayback();
         error = 'Errore durante la lettura: $e';
         notifyListeners();
       }
@@ -255,18 +429,56 @@ class Reader extends ChangeNotifier {
     unawaited(_playIndex(done + 1));
   }
 
+  Future<void> _chapterFinished() async {
+    final last = chapterIndex + 1 >= chapters.length;
+    if (last) {
+      // Libro finito: ci si ferma sull'ultima frase.
+      index = chunks.length - 1;
+      final b = book;
+      if (b != null) {
+        b.progress = 1;
+        unawaited(library.update(b, notify: false));
+      }
+      _resetPlayback();
+      notifyListeners();
+      return;
+    }
+    final stopHere = sleepAtChapterEnd;
+    _switchChapter(chapterIndex + 1);
+    if (stopHere) {
+      cancelSleepTimer();
+      _resetPlayback();
+      _savePosition();
+      notifyListeners();
+      return;
+    }
+    unawaited(_playIndex(0));
+  }
+
+  void _switchChapter(int i, {int chunk = 0}) {
+    _session++;
+    _playToken++;
+    _cache.clear();
+    _pendingPath = null;
+    _midChunk = false;
+    _loadChapter(i, chunk: chunk);
+    _cleanTmp();
+  }
+
   Future<void> pause() async {
     if (state == ReaderState.playing) {
       await _player.pause();
     }
     if (active) {
       state = ReaderState.paused;
+      _savePosition();
       notifyListeners();
     }
   }
 
   Future<void> resume() async {
     if (state != ReaderState.paused) return;
+    await stopPreview();
     final pending = _pendingPath;
     if (pending != null) {
       _pendingPath = null;
@@ -285,13 +497,16 @@ class Reader extends ChangeNotifier {
     }
   }
 
-  Future<void> togglePause() =>
-      state == ReaderState.paused ? resume() : pause();
-
-  /// Salta a una frase (avanti, indietro o dal cursore).
+  /// Salta a una frase del capitolo corrente.
   Future<void> seek(int target) async {
-    if (!active || chunks.isEmpty) return;
+    if (chunks.isEmpty) return;
     final int t = target.clamp(0, chunks.length - 1).toInt();
+    if (!active) {
+      index = t;
+      _savePosition();
+      notifyListeners();
+      return;
+    }
     final wasPaused = state == ReaderState.paused;
     _playToken++;
     _midChunk = false;
@@ -304,25 +519,47 @@ class Reader extends ChangeNotifier {
   Future<void> next() => seek(index + 1);
   Future<void> previous() => seek(index - 1);
 
+  /// Va a un capitolo; se stava leggendo, continua da lì.
+  Future<void> goToChapter(int i, {int chunk = 0}) async {
+    if (chapters.isEmpty) return;
+    final int target = i.clamp(0, chapters.length - 1).toInt();
+    final wasActive = active;
+    final wasPaused = state == ReaderState.paused;
+    await _player.stop();
+    _switchChapter(target, chunk: chunk);
+    _savePosition();
+    if (wasActive && !wasPaused) {
+      state = ReaderState.preparing;
+      notifyListeners();
+      unawaited(_playIndex(index));
+    } else if (wasActive) {
+      state = ReaderState.paused;
+      notifyListeners();
+      unawaited(_playIndex(index));
+    } else {
+      notifyListeners();
+    }
+  }
+
+  Future<void> nextChapter() => goToChapter(chapterIndex + 1);
+
+  /// Se si è già a metà capitolo torna al suo inizio, altrimenti al precedente.
+  Future<void> previousChapter() =>
+      goToChapter(index > 2 ? chapterIndex : chapterIndex - 1);
+
   Future<void> stop() async {
-    _reset();
+    await stopPreview();
+    _savePosition();
+    _resetPlayback();
     await _player.stop();
     notifyListeners();
     _cleanTmp();
   }
 
-  Future<void> _finish() async {
-    _reset();
-    notifyListeners();
-    _cleanTmp();
-  }
-
-  void _reset() {
+  void _resetPlayback() {
     _session++;
     _playToken++;
     state = ReaderState.idle;
-    chunks = const [];
-    index = 0;
     _cache.clear();
     _pendingPath = null;
     _midChunk = false;
@@ -341,79 +578,85 @@ class Reader extends ChangeNotifier {
   }
 
   // -------------------------------------------------------------------------
-  // Salvataggio in un file audio
+  // Timer di spegnimento
 
-  /// Crea un unico file WAV con la lettura di tutto il testo.
-  /// Restituisce il percorso, oppure null se annullato.
-  Future<String?> exportAudio(String text) async {
-    await stop();
-    final v = voice;
-    if (v == null) throw TtsException('Scarica prima una voce.');
-    final list = splitIntoChunks(text);
-    if (list.isEmpty) throw TtsException('Non c\'è niente da leggere.');
-
-    exporting = true;
-    exportProgress = 0;
-    _exportCancel = false;
-    notifyListeners();
-
-    WavFileWriter? writer;
-    String? path;
-    try {
-      await _ensureEngine(v);
-      final docs = await getApplicationDocumentsDirectory();
-      final dir = Directory(p.join(docs.path, 'audio'));
-      await dir.create(recursive: true);
-      final now = DateTime.now();
-      String two(int n) => n.toString().padLeft(2, '0');
-      final stamp =
-          '${now.year}${two(now.month)}${two(now.day)}_${two(now.hour)}${two(now.minute)}${two(now.second)}';
-      path = p.join(dir.path, 'D-Voce_$stamp.wav');
-
-      for (var i = 0; i < list.length; i++) {
-        if (_exportCancel) break;
-        final cp = _phonemize(list[i]);
-        if (cp.isNotEmpty) {
-          final res = await _worker.synth(cp, speed: _speed);
-          if (res.samples.isNotEmpty) {
-            writer ??= await WavFileWriter.open(path, res.sampleRate);
-            await writer.addSamples(res.samples);
-            await writer.addSilence(const Duration(milliseconds: 250));
-          }
-        }
-        exportProgress = (i + 1) / list.length;
+  void setSleepTimer(Duration d) {
+    _sleepTimer?.cancel();
+    sleepAtChapterEnd = false;
+    sleepAt = DateTime.now().add(d);
+    _sleepTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      final at = sleepAt;
+      if (at == null) return;
+      if (DateTime.now().isAfter(at)) {
+        cancelSleepTimer();
+        unawaited(pause());
+      } else {
         notifyListeners();
       }
-      await writer?.close();
-      writer = null;
+    });
+    notifyListeners();
+  }
 
-      final file = File(path);
-      if (_exportCancel || !file.existsSync()) {
-        if (file.existsSync()) await file.delete();
-        return null;
-      }
-      return path;
-    } catch (_) {
-      await writer?.close();
-      if (path != null) {
-        final f = File(path);
-        if (f.existsSync()) await f.delete();
-      }
-      rethrow;
-    } finally {
-      exporting = false;
+  void setSleepAtChapterEnd() {
+    _sleepTimer?.cancel();
+    sleepAt = null;
+    sleepAtChapterEnd = true;
+    notifyListeners();
+  }
+
+  void cancelSleepTimer() {
+    _sleepTimer?.cancel();
+    _sleepTimer = null;
+    sleepAt = null;
+    sleepAtChapterEnd = false;
+    notifyListeners();
+  }
+
+  bool get sleepTimerOn => sleepAt != null || sleepAtChapterEnd;
+
+  Duration? get sleepRemaining {
+    final at = sleepAt;
+    if (at == null) return null;
+    final d = at.difference(DateTime.now());
+    return d.isNegative ? Duration.zero : d;
+  }
+
+  // -------------------------------------------------------------------------
+  // Prova delle voci
+
+  Future<void> preview(VoiceInfo v) async {
+    if (playing) await pause();
+    await stopPreview();
+    previewingVoiceId = v.id;
+    notifyListeners();
+    try {
+      final res = await _synth(v, v.sample, 'it');
+      if (previewingVoiceId != v.id) return;
+      final path = p.join(_tmp.path, 'preview_${v.id}_${DateTime.now().microsecondsSinceEpoch}.wav');
+      await File(path).writeAsBytes(encodeWav(res.samples, res.sampleRate));
+      if (previewingVoiceId != v.id) return;
+      await _previewPlayer.play(DeviceFileSource(path));
+    } catch (e) {
+      previewingVoiceId = null;
+      error = 'Non riesco a far parlare ${v.name}: $e';
       notifyListeners();
     }
   }
 
-  void cancelExport() {
-    _exportCancel = true;
+  Future<void> stopPreview() async {
+    if (previewingVoiceId == null) return;
+    previewingVoiceId = null;
+    await _previewPlayer.stop();
+    notifyListeners();
   }
 
   @override
   void dispose() {
+    _sleepTimer?.cancel();
     _completeSub?.cancel();
+    _previewSub?.cancel();
     _player.dispose();
+    _previewPlayer.dispose();
     _worker.dispose();
     super.dispose();
   }
