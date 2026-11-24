@@ -236,10 +236,39 @@ ImportedBook parseEpub(Uint8List bytes, {String fallbackTitle = 'Senza titolo'})
   }
   if (chapters.isEmpty) throw EpubException('Nel file EPUB non ho trovato testo da leggere.');
 
+  // Copertina: EPUB 3 (properties="cover-image") o EPUB 2 (<meta name="cover">).
+  Uint8List? cover;
+  String? coverId = properties.entries
+      .where((e) => e.value.split(' ').contains('cover-image'))
+      .map((e) => e.key)
+      .firstOrNull;
+  if (coverId == null) {
+    for (final m in RegExp(r'<meta\b[^>]*>', caseSensitive: false).allMatches(opf)) {
+      final tag = m.group(0)!;
+      if (_attr(tag, 'name').toLowerCase() == 'cover') {
+        coverId = _attr(tag, 'content');
+        break;
+      }
+    }
+  }
+  if (coverId == null || !(mediaTypes[coverId] ?? '').startsWith('image/')) {
+    coverId = mediaTypes.entries
+        .where((e) => e.value.startsWith('image/') &&
+            ('${e.key} ${manifest[e.key]}').toLowerCase().contains('cover'))
+        .map((e) => e.key)
+        .firstOrNull;
+  }
+  final coverPath = coverId == null ? null : manifest[coverId];
+  if (coverPath != null) {
+    final f = files[p.posix.normalize(coverPath)];
+    if (f != null) cover = Uint8List.fromList(f.content);
+  }
+
   return ImportedBook(
     title: title.isEmpty ? fallbackTitle : title,
     author: author,
     format: 'epub',
     chapters: chapters,
+    coverBytes: cover,
   );
 }

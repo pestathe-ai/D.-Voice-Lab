@@ -53,6 +53,8 @@ class DVoceApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: buildTheme(Brightness.light),
       darkTheme: buildTheme(Brightness.dark),
+      // Come nelle app di audiolibri: tema scuro, copertine in primo piano.
+      themeMode: ThemeMode.dark,
       home: LibraryPage(store: store, reader: reader, library: library),
     );
   }

@@ -48,6 +48,14 @@ service = '''
             </intent-filter>
         </receiver>
 '''
+# Android 11+: per vedere i motori di sintesi vocale installati (Google, Samsung…).
+if 'android.intent.action.TTS_SERVICE' not in s:
+    s = s.replace('<application', '''<queries>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>
+    <application''', 1)
 if 'com.ryanheise.audioservice.AudioService"' not in s:
     s = s.replace('</application>', service + '    </application>', 1)
 open(p, 'w').write(s)

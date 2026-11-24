@@ -1,12 +1,17 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
-import '../core/voice_catalog.dart';
 import '../services/library.dart';
 import '../services/reader.dart';
 import '../services/voice_store.dart';
+import 'cover_page.dart';
+import 'theme.dart';
 import 'voices_page.dart';
 import 'widgets.dart';
 
+/// Il lettore, in stile app di audiolibri: copertina grande, capitolo,
+/// barra di avanzamento e comandi ±30 secondi.
 class PlayerPage extends StatefulWidget {
   const PlayerPage({
     super.key,
@@ -72,16 +77,21 @@ class _PlayerPageState extends State<PlayerPage> {
       context: context,
       showDragHandle: true,
       builder: (ctx) => SafeArea(
-        child: Wrap(
-          children: [
-            const ListTile(title: Text('Velocità di lettura')),
-            for (final s in speeds)
-              ListTile(
-                title: Text('${fmtSpeed(s)}${s == 1.0 ? '  (normale)' : ''}'),
-                trailing: (reader.speed - s).abs() < 0.01 ? const Icon(Icons.check_rounded) : null,
-                onTap: () => Navigator.pop(ctx, s),
-              ),
-          ],
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('Velocità di lettura')),
+              for (final s in speeds)
+                ListTile(
+                  title: Text('${fmtSpeed(s)}${s == 1.0 ? '  (normale)' : ''}'),
+                  trailing: (reader.speed - s).abs() < 0.01
+                      ? const Icon(Icons.check_rounded, color: Brand.orange)
+                      : null,
+                  onTap: () => Navigator.pop(ctx, s),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -93,27 +103,30 @@ class _PlayerPageState extends State<PlayerPage> {
       context: context,
       showDragHandle: true,
       builder: (ctx) => SafeArea(
-        child: Wrap(
-          children: [
-            const ListTile(title: Text('Spegni la lettura tra…')),
-            for (final m in [5, 15, 30, 45, 60, 90])
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const ListTile(title: Text('Timer di spegnimento')),
+              for (final m in [5, 10, 15, 30, 45, 60])
+                ListTile(
+                  leading: const Icon(Icons.timer_outlined),
+                  title: Text('$m minuti'),
+                  onTap: () => Navigator.pop(ctx, m),
+                ),
               ListTile(
-                leading: const Icon(Icons.timer_outlined),
-                title: Text('$m minuti'),
-                onTap: () => Navigator.pop(ctx, m),
+                leading: const Icon(Icons.bookmark_outline_rounded),
+                title: const Text('Alla fine del capitolo'),
+                onTap: () => Navigator.pop(ctx, -1),
               ),
-            ListTile(
-              leading: const Icon(Icons.bookmark_outline_rounded),
-              title: const Text('Alla fine del capitolo'),
-              onTap: () => Navigator.pop(ctx, -1),
-            ),
-            if (reader.sleepTimerOn)
-              ListTile(
-                leading: const Icon(Icons.timer_off_outlined),
-                title: const Text('Togli il timer'),
-                onTap: () => Navigator.pop(ctx, 0),
-              ),
-          ],
+              if (reader.sleepTimerOn)
+                ListTile(
+                  leading: const Icon(Icons.timer_off_outlined),
+                  title: const Text('Disattiva il timer'),
+                  onTap: () => Navigator.pop(ctx, 0),
+                ),
+            ],
+          ),
         ),
       ),
     );
@@ -128,8 +141,10 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _voice() async {
-    final installed = widget.store.installed;
-    if (installed.isEmpty) {
+    await reader.refreshSystemVoices();
+    if (!mounted) return;
+    final voices = reader.availableVoices;
+    if (voices.isEmpty) {
       _openVoices();
       return;
     }
@@ -144,17 +159,23 @@ class _PlayerPageState extends State<PlayerPage> {
             shrinkWrap: true,
             children: [
               const ListTile(title: Text('Chi legge questo libro?')),
-              for (final v in installed)
+              for (final v in voices)
                 ListTile(
-                  leading: Icon(v.gender == VoiceGender.female ? Icons.face_3_outlined : Icons.face_outlined),
+                  leading: Icon(
+                    v.isSystem
+                        ? (v.system!.network ? Icons.cloud_outlined : Icons.phone_android_rounded)
+                        : Icons.download_done_rounded,
+                  ),
                   title: Text(v.name),
                   subtitle: Text(v.description),
-                  trailing: reader.voice?.id == v.id ? const Icon(Icons.check_rounded) : null,
+                  trailing: reader.voice?.id == v.id
+                      ? const Icon(Icons.check_rounded, color: Brand.orange)
+                      : null,
                   onTap: () => Navigator.pop(ctx, v.id),
                 ),
               ListTile(
-                leading: const Icon(Icons.download_rounded),
-                title: const Text('Altre voci…'),
+                leading: const Icon(Icons.tune_rounded),
+                title: const Text('Prova e gestisci le voci…'),
                 onTap: () => Navigator.pop(ctx, '_more'),
               ),
             ],
@@ -167,20 +188,41 @@ class _PlayerPageState extends State<PlayerPage> {
       _openVoices();
       return;
     }
-    final v = voiceById(picked);
-    if (v != null) await reader.selectVoice(v);
+    for (final v in voices) {
+      if (v.id == picked) {
+        await reader.selectVoice(v);
+        break;
+      }
+    }
+  }
+
+  void _text() {
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SizedBox(
+        height: MediaQuery.sizeOf(ctx).height * 0.6,
+        child: ListenableBuilder(
+          listenable: reader,
+          builder: (context, _) => reader.chunks.isEmpty
+              ? const SizedBox.shrink()
+              : _TextView(reader: reader),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: Listenable.merge([reader, widget.store]),
+      listenable: Listenable.merge([reader, widget.store, widget.library]),
       builder: (context, _) {
         final theme = Theme.of(context);
         final book = reader.book;
         if (book == null || reader.loadingBook || reader.chunks.isEmpty) {
           return Scaffold(
-            appBar: AppBar(title: Text(book?.title ?? '')),
+            appBar: AppBar(),
             body: Center(
               child: book == null
                   ? const Text('Nessun libro aperto')
@@ -190,134 +232,205 @@ class _PlayerPageState extends State<PlayerPage> {
         }
         final ch = reader.chapters[reader.chapterIndex];
         final chTitle = ch.title.isEmpty ? 'Capitolo ${reader.chapterIndex + 1}' : ch.title;
-        final voice = reader.voice;
         final sleepLeft = reader.sleepRemaining;
+        final size = MediaQuery.sizeOf(context);
+        final coverSize = math.min(size.width - 72, size.height * 0.36).clamp(140.0, 380.0).toDouble();
 
         return Scaffold(
           appBar: AppBar(
-            title: Text(book.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-            titleTextStyle: theme.appBarTheme.titleTextStyle?.copyWith(fontSize: 18),
+            leading: IconButton(
+              tooltip: 'Chiudi',
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, size: 32),
+              onPressed: () => Navigator.pop(context),
+            ),
+            title: Text(
+              book.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.titleSmall,
+            ),
+            centerTitle: true,
             actions: [
-              IconButton(
-                tooltip: 'Capitoli',
-                onPressed: _chapters,
-                icon: const Icon(Icons.format_list_bulleted_rounded),
+              PopupMenuButton<String>(
+                onSelected: (v) {
+                  if (v == 'cover') {
+                    Navigator.of(context).push(MaterialPageRoute<bool>(
+                      builder: (_) => CoverPage(book: book, library: widget.library),
+                    ));
+                  } else if (v == 'voices') {
+                    _openVoices();
+                  }
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'cover', child: Text('Cambia copertina')),
+                  PopupMenuItem(value: 'voices', child: Text('Voci')),
+                ],
               ),
             ],
           ),
-          body: SafeArea(
-            top: false,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: _chapters,
+          body: Container(
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [Color(0xFF1A2340), Color(0xFF0D1018)],
+                stops: [0, 0.6],
+              ),
+            ),
+            child: SafeArea(
+              top: false,
+              child: LayoutBuilder(
+                builder: (context, constraints) => SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(minHeight: constraints.maxHeight),
                     child: Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 6),
-                      child: Row(
+                      padding: const EdgeInsets.fromLTRB(24, 8, 24, 16),
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  'Capitolo ${reader.chapterIndex + 1} di ${reader.chapters.length}',
-                                  style: theme.textTheme.labelMedium,
+                          Column(
+                            children: [
+                              DecoratedBox(
+                                decoration: BoxDecoration(
+                                  borderRadius: BorderRadius.circular(14),
+                                  boxShadow: const [
+                                    BoxShadow(color: Colors.black54, blurRadius: 30, offset: Offset(0, 12)),
+                                  ],
                                 ),
+                                child: CoverArt(
+                                  book: book,
+                                  library: widget.library,
+                                  size: coverSize,
+                                  radius: 14,
+                                ),
+                              ),
+                              const SizedBox(height: 22),
+                              Text(
+                                book.title,
+                                textAlign: TextAlign.center,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                              ),
+                              if (book.author.isNotEmpty) ...[
+                                const SizedBox(height: 2),
                                 Text(
-                                  chTitle,
-                                  maxLines: 2,
+                                  book.author,
+                                  textAlign: TextAlign.center,
+                                  maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+                                  style: theme.textTheme.bodyMedium?.copyWith(
+                                    color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                                  ),
                                 ),
                               ],
-                            ),
+                              const SizedBox(height: 14),
+                              InkWell(
+                                borderRadius: BorderRadius.circular(20),
+                                onTap: _chapters,
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
+                                        child: Text(
+                                          chTitle,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: theme.textTheme.labelLarge?.copyWith(color: Brand.orange),
+                                        ),
+                                      ),
+                                      const Icon(Icons.expand_more_rounded, color: Brand.orange, size: 20),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
-                          const Icon(Icons.expand_more_rounded),
+                          const SizedBox(height: 12),
+                          Column(
+                            children: [
+                              _ChapterSlider(reader: reader),
+                              const SizedBox(height: 4),
+                              Row(
+                                children: [
+                                  Text(formatClock(reader.chapterElapsed), style: theme.textTheme.labelSmall),
+                                  const Spacer(),
+                                  Text(
+                                    reader.state == ReaderState.preparing ? 'Preparo la voce…' : '',
+                                    style: theme.textTheme.labelSmall,
+                                  ),
+                                  const Spacer(),
+                                  Text('-${formatClock(reader.chapterRemaining)}', style: theme.textTheme.labelSmall),
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              _Controls(reader: reader),
+                              const SizedBox(height: 18),
+                              Row(
+                                mainAxisAlignment: MainAxisAlignment.spaceAround,
+                                children: [
+                                  _BottomAction(
+                                    icon: Icons.speed_rounded,
+                                    label: fmtSpeed(reader.speed),
+                                    onTap: _speed,
+                                  ),
+                                  _BottomAction(
+                                    icon: reader.sleepTimerOn ? Icons.bedtime_rounded : Icons.bedtime_outlined,
+                                    label: sleepLeft != null
+                                        ? formatClock(sleepLeft)
+                                        : reader.sleepAtChapterEnd
+                                            ? 'Fine cap.'
+                                            : 'Timer',
+                                    highlighted: reader.sleepTimerOn,
+                                    onTap: _sleep,
+                                  ),
+                                  _BottomAction(
+                                    icon: Icons.format_list_bulleted_rounded,
+                                    label: 'Capitoli',
+                                    onTap: _chapters,
+                                  ),
+                                  _BottomAction(
+                                    icon: Icons.record_voice_over_outlined,
+                                    label: reader.voice?.name ?? 'Voce',
+                                    onTap: _voice,
+                                  ),
+                                  _BottomAction(
+                                    icon: Icons.notes_rounded,
+                                    label: 'Testo',
+                                    onTap: _text,
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 14),
+                              Row(
+                                children: [
+                                  Expanded(
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(2),
+                                      child: LinearProgressIndicator(
+                                        value: reader.bookProgress,
+                                        minHeight: 2,
+                                        backgroundColor: Colors.white12,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 10),
+                                  Text(
+                                    'Libro ${(reader.bookProgress * 100).round()}% · '
+                                    'cap. ${reader.chapterIndex + 1}/${reader.chapters.length}',
+                                    style: theme.textTheme.labelSmall,
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
                   ),
-                  const SizedBox(height: 8),
-                  Expanded(child: _TextView(reader: reader)),
-                  const SizedBox(height: 8),
-                  _ChapterSlider(reader: reader),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
-                    child: Row(
-                      children: [
-                        Text(
-                          'Frase ${reader.index + 1} di ${reader.chunks.length}',
-                          style: theme.textTheme.labelSmall,
-                        ),
-                        const Spacer(),
-                        Text(
-                          'mancano ${formatDuration(reader.chapterRemaining)}',
-                          style: theme.textTheme.labelSmall,
-                        ),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  _Controls(reader: reader),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: _Pill(
-                          icon: Icons.speed_rounded,
-                          label: fmtSpeed(reader.speed),
-                          onTap: _speed,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        flex: 2,
-                        child: _Pill(
-                          icon: Icons.record_voice_over_outlined,
-                          label: voice?.name ?? 'Scegli voce',
-                          onTap: _voice,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: _Pill(
-                          icon: reader.sleepTimerOn ? Icons.timer_rounded : Icons.timer_outlined,
-                          label: sleepLeft != null
-                              ? formatClock(sleepLeft)
-                              : reader.sleepAtChapterEnd
-                                  ? 'Fine cap.'
-                                  : 'Timer',
-                          highlighted: reader.sleepTimerOn,
-                          onTap: _sleep,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Row(
-                    children: [
-                      Expanded(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(4),
-                          child: LinearProgressIndicator(
-                            value: reader.bookProgress,
-                            minHeight: 4,
-                            backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.12),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'libro ${(reader.bookProgress * 100).round()}%',
-                        style: theme.textTheme.labelSmall,
-                      ),
-                    ],
-                  ),
-                ],
+                ),
               ),
             ),
           ),
@@ -339,55 +452,22 @@ class _TextView extends StatelessWidget {
     final i = reader.index;
     final chunks = reader.chunks;
     final dim = theme.colorScheme.onSurface.withValues(alpha: 0.45);
-    final preparing = reader.state == ReaderState.preparing;
-
-    return Card(
-      child: Stack(
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 0, 24, 32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 20, 20, 28),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                if (i > 0)
-                  Text(
-                    chunks[i - 1],
-                    style: theme.textTheme.bodyLarge?.copyWith(color: dim, height: 1.5),
-                  ),
-                if (i > 0) const SizedBox(height: 10),
-                Text(
-                  chunks[i],
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    height: 1.45,
-                  ),
-                ),
-                if (i + 1 < chunks.length) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    chunks[i + 1],
-                    style: theme.textTheme.bodyLarge?.copyWith(color: dim, height: 1.5),
-                  ),
-                ],
-              ],
-            ),
+          if (i > 0)
+            Text(chunks[i - 1], style: theme.textTheme.bodyLarge?.copyWith(color: dim, height: 1.5)),
+          if (i > 0) const SizedBox(height: 12),
+          Text(
+            chunks[i],
+            style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w600, height: 1.45),
           ),
-          if (preparing)
-            Positioned(
-              right: 12,
-              bottom: 10,
-              child: Row(
-                children: [
-                  const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
-                  const SizedBox(width: 8),
-                  Text('Preparo la voce…', style: theme.textTheme.labelSmall),
-                ],
-              ),
-            ),
+          if (i + 1 < chunks.length) ...[
+            const SizedBox(height: 12),
+            Text(chunks[i + 1], style: theme.textTheme.bodyLarge?.copyWith(color: dim, height: 1.5)),
+          ],
         ],
       ),
     );
@@ -408,20 +488,21 @@ class _ChapterSliderState extends State<_ChapterSlider> {
   @override
   Widget build(BuildContext context) {
     final count = widget.reader.chunks.length;
-    if (count < 2) return const SizedBox(height: 8);
+    if (count < 2) return const SizedBox(height: 14);
     final max = (count - 1).toDouble();
     final double value = (_drag ?? widget.reader.index.toDouble()).clamp(0.0, max).toDouble();
-    return Slider(
-      value: value,
-      min: 0,
-      max: max,
-      label: 'Frase ${value.round() + 1}',
-      divisions: count - 1 > 1000 ? null : count - 1,
-      onChanged: (v) => setState(() => _drag = v),
-      onChangeEnd: (v) {
-        setState(() => _drag = null);
-        widget.reader.seek(v.round());
-      },
+    return SizedBox(
+      height: 24,
+      child: Slider(
+        value: value,
+        min: 0,
+        max: max,
+        onChanged: (v) => setState(() => _drag = v),
+        onChangeEnd: (v) {
+          setState(() => _drag = null);
+          widget.reader.seek(v.round());
+        },
+      ),
     );
   }
 }
@@ -435,7 +516,7 @@ class _Controls extends StatelessWidget {
     final playing = reader.playing;
     final hasNextChapter = reader.chapterIndex + 1 < reader.chapters.length;
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         IconButton(
           tooltip: 'Capitolo precedente',
@@ -444,27 +525,29 @@ class _Controls extends StatelessWidget {
           icon: const Icon(Icons.skip_previous_rounded),
         ),
         IconButton(
-          tooltip: 'Frase precedente',
-          iconSize: 32,
-          onPressed: reader.index > 0 ? reader.previous : null,
-          icon: const Icon(Icons.replay_rounded),
+          tooltip: 'Indietro 30 secondi',
+          iconSize: 38,
+          onPressed: () => reader.skipBy(const Duration(seconds: -30)),
+          icon: const Icon(Icons.replay_30_rounded),
         ),
-        FilledButton(
-          style: FilledButton.styleFrom(
-            shape: const CircleBorder(),
-            padding: const EdgeInsets.all(18),
-          ),
-          onPressed: reader.togglePlay,
-          child: Icon(
-            playing ? Icons.pause_rounded : Icons.play_arrow_rounded,
-            size: 40,
+        SizedBox(
+          width: 78,
+          height: 78,
+          child: IconButton.filled(
+            onPressed: reader.togglePlay,
+            style: IconButton.styleFrom(
+              backgroundColor: Brand.orange,
+              foregroundColor: Brand.ink,
+            ),
+            iconSize: 46,
+            icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
           ),
         ),
         IconButton(
-          tooltip: 'Frase successiva',
-          iconSize: 32,
-          onPressed: reader.index + 1 < reader.chunks.length ? reader.next : null,
-          icon: Transform.flip(flipX: true, child: const Icon(Icons.replay_rounded)),
+          tooltip: 'Avanti 30 secondi',
+          iconSize: 38,
+          onPressed: () => reader.skipBy(const Duration(seconds: 30)),
+          icon: const Icon(Icons.forward_30_rounded),
         ),
         IconButton(
           tooltip: 'Capitolo successivo',
@@ -477,8 +560,8 @@ class _Controls extends StatelessWidget {
   }
 }
 
-class _Pill extends StatelessWidget {
-  const _Pill({
+class _BottomAction extends StatelessWidget {
+  const _BottomAction({
     required this.icon,
     required this.label,
     required this.onTap,
@@ -493,28 +576,24 @@ class _Pill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Material(
-      color: highlighted
-          ? theme.colorScheme.secondary.withValues(alpha: 0.22)
-          : theme.cardTheme.color,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap,
+    final color = highlighted ? Brand.orange : theme.colorScheme.onSurface;
+    return InkWell(
+      borderRadius: BorderRadius.circular(12),
+      onTap: onTap,
+      child: SizedBox(
+        width: 62,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(icon, size: 18),
-              const SizedBox(width: 6),
-              Flexible(
-                child: Text(
-                  label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelLarge,
-                ),
+              Icon(icon, color: color, size: 22),
+              const SizedBox(height: 4),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(color: color),
               ),
             ],
           ),
@@ -544,23 +623,20 @@ class _ChaptersSheet extends StatelessWidget {
             }
             final c = i - 1;
             final current = c == reader.chapterIndex;
-            final minutes = (chapters[c].text.length / 14 / 60).ceil();
+            final minutes = (chapters[c].text.length / 14 / 60 / reader.speed).ceil();
             return ListTile(
               selected: current,
+              selectedColor: Brand.orange,
               leading: SizedBox(
                 width: 32,
-                child: Text(
-                  '${c + 1}',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.labelLarge,
-                ),
+                child: Text('${c + 1}', textAlign: TextAlign.center, style: theme.textTheme.labelLarge),
               ),
               title: Text(
                 chapters[c].title.isEmpty ? 'Capitolo ${c + 1}' : chapters[c].title,
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
-              subtitle: Text('circa $minutes min'),
+              subtitle: Text('$minutes min'),
               trailing: current ? const Icon(Icons.graphic_eq_rounded) : null,
               onTap: () => Navigator.pop(context, c),
             );

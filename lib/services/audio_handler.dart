@@ -18,7 +18,8 @@ class DVoceAudioHandler extends BaseAudioHandler {
     if (b != null && reader.chapters.isNotEmpty) {
       final ch = reader.chapters[reader.chapterIndex];
       final chTitle = ch.title.isEmpty ? 'Capitolo ${reader.chapterIndex + 1}' : ch.title;
-      final key = '${b.id}/${reader.chapterIndex}';
+      final cover = reader.library.coverPath(b);
+      final key = '${b.id}/${reader.chapterIndex}/${b.coverVersion}';
       if (key != _lastItemKey) {
         _lastItemKey = key;
         mediaItem.add(MediaItem(
@@ -27,6 +28,7 @@ class DVoceAudioHandler extends BaseAudioHandler {
           album: b.title,
           artist: b.author.isEmpty ? 'D. Voce' : b.author,
           displaySubtitle: b.title,
+          artUri: cover == null ? null : Uri.file(cover),
         ));
       }
     }
@@ -45,9 +47,9 @@ class DVoceAudioHandler extends BaseAudioHandler {
 
     playbackState.add(PlaybackState(
       controls: [
-        MediaControl.skipToPrevious,
+        MediaControl.rewind,
         if (playing || reader.state == ReaderState.preparing) MediaControl.pause else MediaControl.play,
-        MediaControl.skipToNext,
+        MediaControl.fastForward,
         MediaControl.stop,
       ],
       systemActions: const {
@@ -56,6 +58,8 @@ class DVoceAudioHandler extends BaseAudioHandler {
         MediaAction.playPause,
         MediaAction.skipToNext,
         MediaAction.skipToPrevious,
+        MediaAction.rewind,
+        MediaAction.fastForward,
         MediaAction.stop,
       },
       androidCompactActionIndices: const [0, 1, 2],
@@ -76,7 +80,7 @@ class DVoceAudioHandler extends BaseAudioHandler {
     await super.stop();
   }
 
-  /// I tasti "avanti/indietro" saltano di una frase (come nelle cuffie).
+  /// I tasti "avanti/indietro" delle cuffie saltano di una frase.
   @override
   Future<void> skipToNext() => reader.next();
 
@@ -84,8 +88,8 @@ class DVoceAudioHandler extends BaseAudioHandler {
   Future<void> skipToPrevious() => reader.previous();
 
   @override
-  Future<void> fastForward() => reader.seek(reader.index + 3);
+  Future<void> fastForward() => reader.skipBy(const Duration(seconds: 30));
 
   @override
-  Future<void> rewind() => reader.seek(reader.index - 3);
+  Future<void> rewind() => reader.skipBy(const Duration(seconds: -30));
 }

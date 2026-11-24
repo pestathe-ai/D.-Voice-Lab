@@ -1,6 +1,8 @@
 /// Un libro nella libreria: titolo, capitoli e testo.
 library;
 
+import 'dart:typed_data';
+
 class Chapter {
   const Chapter({required this.title, required this.text});
 
@@ -31,6 +33,7 @@ class BookMeta {
     this.progress = 0,
     this.lastOpened,
     this.voiceId,
+    this.coverVersion = 0,
   });
 
   final String id;
@@ -53,6 +56,9 @@ class BookMeta {
   /// Voce scelta per questo libro (null = quella generale).
   String? voiceId;
 
+  /// 0 = nessuna copertina; cresce ogni volta che la copertina cambia.
+  int coverVersion;
+
   /// Durata stimata dell'ascolto (circa 14 caratteri al secondo).
   Duration get estimatedDuration => Duration(seconds: totalChars ~/ 14);
 
@@ -70,6 +76,7 @@ class BookMeta {
         'progress': progress,
         'lastOpened': lastOpened?.toIso8601String(),
         'voiceId': voiceId,
+        'coverVersion': coverVersion,
       };
 
   factory BookMeta.fromJson(Map<String, Object?> j) => BookMeta(
@@ -86,6 +93,7 @@ class BookMeta {
         progress: (j['progress'] as num?)?.toDouble() ?? 0,
         lastOpened: DateTime.tryParse((j['lastOpened'] as String?) ?? ''),
         voiceId: j['voiceId'] as String?,
+        coverVersion: (j['coverVersion'] as num?)?.toInt() ?? 0,
       );
 }
 
@@ -96,12 +104,16 @@ class ImportedBook {
     required this.author,
     required this.format,
     required this.chapters,
+    this.coverBytes,
   });
 
   String title;
   String author;
   final String format;
   final List<Chapter> chapters;
+
+  /// Copertina trovata dentro il file (EPUB) o la prima pagina (PDF).
+  Uint8List? coverBytes;
 
   int get totalChars => chapters.fold(0, (s, c) => s + c.text.length);
 }

@@ -1,16 +1,41 @@
 import 'package:flutter/material.dart';
 
+import '../core/languages.dart';
 import '../core/voice_catalog.dart';
 import '../services/reader.dart';
+import '../services/system_tts.dart';
 import '../services/voice_store.dart';
 import 'theme.dart';
 import 'widgets.dart';
 
-class VoicesPage extends StatelessWidget {
+class VoicesPage extends StatefulWidget {
   const VoicesPage({super.key, required this.store, required this.reader});
 
   final VoiceStore store;
   final Reader reader;
+
+  @override
+  State<VoicesPage> createState() => _VoicesPageState();
+}
+
+class _VoicesPageState extends State<VoicesPage> {
+  Reader get reader => widget.reader;
+  VoiceStore get store => widget.store;
+  bool _showOffline = false;
+
+  @override
+  void initState() {
+    super.initState();
+    reader.refreshSystemVoices(force: true);
+  }
+
+  @override
+  void dispose() {
+    final r = reader;
+    // Fuori dal dispose: la prova si ferma appena si esce dalla pagina.
+    Future.microtask(r.stopPreview);
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -20,44 +45,108 @@ class VoicesPage extends StatelessWidget {
         listenable: Listenable.merge([store, reader]),
         builder: (context, _) {
           final theme = Theme.of(context);
-          final natural = store.isPackInstalled(kSupertonicPack);
+          final lang = reader.book?.lang ?? 'it';
+          final sys = reader.systemVoices;
+          final installedSys = sys.where((v) => v.installed).toList();
+          final missingSys = sys.where((v) => !v.installed).toList();
+          final engines = reader.engines;
+          final offlineInstalled = kPacks.any(store.isPackInstalled);
+
           return ListView(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 32),
             children: [
               Text(
-                'Le voci si scaricano una volta sola e poi funzionano senza internet, '
-                'gratis e senza limiti. Conviene usare il Wi‑Fi.',
-                style: theme.textTheme.bodyMedium,
+                'Voci del telefono · ${languageName(lang)}',
+                style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
               ),
-              const SizedBox(height: 16),
-              _PackCard(pack: kSupertonicPack, store: store, reader: reader, recommended: true),
-              if (natural) ...[
-                const SizedBox(height: 12),
-                for (final v in voicesOfPack(kSupertonicPack)) ...[
-                  _VoiceTile(voice: v, store: store, reader: reader),
-                  const SizedBox(height: 8),
-                ],
-                const SizedBox(height: 8),
-                _QualityCard(reader: reader),
-              ],
-              const SizedBox(height: 24),
-              Text('Voci leggere', style: theme.textTheme.titleMedium),
               const SizedBox(height: 4),
               Text(
-                'Meno naturali ma più piccole e veloci, utili sui telefoni meno potenti. '
-                'Leggono solo in italiano.',
+                'Sono le voci di Google (o del produttore del telefono): accento '
+                'italiano vero, gratis e senza limiti. Quelle con la nuvola sono le più '
+                'naturali ma usano internet; le altre funzionano anche offline.',
                 style: theme.textTheme.bodySmall,
               ),
-              const SizedBox(height: 12),
-              for (final pack in [kPaolaPack, kRiccardoPack]) ...[
-                _PackCard(pack: pack, store: store, reader: reader),
-                if (store.isPackInstalled(pack))
-                  for (final v in voicesOfPack(pack)) ...[
-                    const SizedBox(height: 8),
-                    _VoiceTile(voice: v, store: store, reader: reader),
-                  ],
+              if (engines.length > 1) ...[
                 const SizedBox(height: 12),
+                InputDecorator(
+                  decoration: const InputDecoration(labelText: 'Motore vocale'),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<String>(
+                      isDense: true,
+                      isExpanded: true,
+                      value: engines.any((e) => e['name'] == reader.engine) ? reader.engine : null,
+                      items: [
+                        for (final e in engines)
+                          DropdownMenuItem(value: e['name'], child: Text(e['label'] ?? e['name']!)),
+                      ],
+                      onChanged: (v) {
+                        if (v != null) reader.setEngine(v);
+                      },
+                    ),
+                  ),
+                ),
               ],
+              const SizedBox(height: 12),
+              if (!reader.systemVoicesLoaded)
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: CircularProgressIndicator()),
+                )
+              else if (installedSys.isEmpty)
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(16),
+                    child: Text(
+                      'Non trovo voci in ${languageName(lang).toLowerCase()} sul telefono. '
+                      'Apri Impostazioni › Accessibilità (o Sistema) › Sintesi vocale, '
+                      'scegli "Servizi di riconoscimento vocale di Google" e installa i dati '
+                      'vocali della lingua. Poi torna qui.',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                  ),
+                )
+              else
+                for (final v in installedSys) ...[
+                  _VoiceTile(choice: VoiceChoice.system(v), reader: reader, system: v),
+                  const SizedBox(height: 8),
+                ],
+              if (missingSys.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4, bottom: 8),
+                  child: Text(
+                    'Ci sono altre ${missingSys.length} voci da scaricare nelle impostazioni '
+                    'del telefono (Sintesi vocale › Google › Installa dati vocali).',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () => reader.refreshSystemVoices(force: true),
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('Aggiorna elenco'),
+                ),
+              ),
+              const SizedBox(height: 16),
+              const Divider(),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text('Voci scaricabili nell\'app', style: theme.textTheme.titleMedium),
+                subtitle: const Text('Funzionano sempre offline, ma sono meno naturali in italiano.'),
+                trailing: Icon(_showOffline ? Icons.expand_less_rounded : Icons.expand_more_rounded),
+                onTap: () => setState(() => _showOffline = !_showOffline),
+              ),
+              if (_showOffline || offlineInstalled)
+                for (final pack in kPacks) ...[
+                  _PackCard(pack: pack, store: store, reader: reader),
+                  if (store.isPackInstalled(pack))
+                    for (final v in voicesOfPack(pack)) ...[
+                      const SizedBox(height: 8),
+                      _VoiceTile(choice: VoiceChoice.offline(v), reader: reader),
+                    ],
+                  const SizedBox(height: 12),
+                ],
+              if (offlineInstalled) _QualityCard(reader: reader),
             ],
           );
         },
@@ -67,39 +156,21 @@ class VoicesPage extends StatelessWidget {
 }
 
 class _PackCard extends StatelessWidget {
-  const _PackCard({
-    required this.pack,
-    required this.store,
-    required this.reader,
-    this.recommended = false,
-  });
+  const _PackCard({required this.pack, required this.store, required this.reader});
 
   final VoicePack pack;
   final VoiceStore store;
   final Reader reader;
-  final bool recommended;
 
   Future<void> _download(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       await store.download(pack);
       if (store.isPackInstalled(pack)) {
-        final current = reader.defaultVoice;
-        // La prima volta si sceglie in automatico una voce del pacchetto.
-        if (current == null || (pack == kSupertonicPack && !current.natural)) {
-          final v = voiceById(kDefaultVoiceId);
-          await reader.selectDefaultVoice(
-            pack == kSupertonicPack && v != null ? v : voicesOfPack(pack).first,
-          );
-        }
-        messenger.showSnackBar(
-          SnackBar(content: Text('${pack.title}: pronte!')),
-        );
+        messenger.showSnackBar(SnackBar(content: Text('${pack.title}: pronte!')));
       }
     } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(content: Text('Download non riuscito: $e')),
-      );
+      messenger.showSnackBar(SnackBar(content: Text('Download non riuscito: $e')));
     }
   }
 
@@ -111,7 +182,7 @@ class _PackCard extends StatelessWidget {
       action: 'Elimina',
     );
     if (!ok) return;
-    if (reader.active) await reader.stop();
+    if (reader.active && reader.voice?.offline?.pack.id == pack.id) await reader.stop();
     await store.delete(pack);
   }
 
@@ -123,7 +194,7 @@ class _PackCard extends StatelessWidget {
     Widget actions;
     switch (status) {
       case VoiceStatus.notInstalled:
-        actions = FilledButton.icon(
+        actions = OutlinedButton.icon(
           onPressed: () => _download(context),
           icon: const Icon(Icons.download_rounded),
           label: Text('Scarica · ${pack.sizeMb} MB'),
@@ -137,13 +208,8 @@ class _PackCard extends StatelessWidget {
             const SizedBox(height: 6),
             Row(
               children: [
-                Expanded(
-                  child: Text(pr == null ? 'Download…' : 'Download ${(pr * 100).round()}%'),
-                ),
-                TextButton(
-                  onPressed: () => store.cancel(pack),
-                  child: const Text('Annulla'),
-                ),
+                Expanded(child: Text(pr == null ? 'Download…' : 'Download ${(pr * 100).round()}%')),
+                TextButton(onPressed: () => store.cancel(pack), child: const Text('Annulla')),
               ],
             ),
           ],
@@ -154,7 +220,7 @@ class _PackCard extends StatelessWidget {
           children: [
             LinearProgressIndicator(),
             SizedBox(height: 6),
-            Text('Installazione… può richiedere un paio di minuti.'),
+            Text('Installazione…'),
           ],
         );
       case VoiceStatus.installed:
@@ -163,10 +229,7 @@ class _PackCard extends StatelessWidget {
             const Icon(Icons.check_circle_rounded, color: Colors.green, size: 20),
             const SizedBox(width: 6),
             const Expanded(child: Text('Installate')),
-            TextButton(
-              onPressed: () => _delete(context),
-              child: const Text('Elimina'),
-            ),
+            TextButton(onPressed: () => _delete(context), child: const Text('Elimina')),
           ],
         );
     }
@@ -177,25 +240,9 @@ class _PackCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    pack.title,
-                    style: theme.textTheme.titleLarge?.copyWith(fontWeight: FontWeight.w800),
-                  ),
-                ),
-                if (recommended)
-                  Chip(
-                    label: const Text('Consigliate'),
-                    visualDensity: VisualDensity.compact,
-                    side: BorderSide.none,
-                    backgroundColor: Brand.orange.withValues(alpha: 0.22),
-                  ),
-              ],
-            ),
+            Text(pack.title, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800)),
             const SizedBox(height: 4),
-            Text(pack.description, style: theme.textTheme.bodyMedium),
+            Text(pack.description, style: theme.textTheme.bodySmall),
             const SizedBox(height: 12),
             actions,
           ],
@@ -206,63 +253,62 @@ class _PackCard extends StatelessWidget {
 }
 
 class _VoiceTile extends StatelessWidget {
-  const _VoiceTile({required this.voice, required this.store, required this.reader});
+  const _VoiceTile({required this.choice, required this.reader, this.system});
 
-  final VoiceInfo voice;
-  final VoiceStore store;
+  final VoiceChoice choice;
   final Reader reader;
+  final SystemVoice? system;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final selected = reader.voice?.id == voice.id;
-    final previewing = reader.previewingVoiceId == voice.id;
+    final selected = reader.voice?.id == choice.id;
+    final previewing = reader.previewingVoiceId == choice.id;
+    final IconData icon;
+    if (system != null) {
+      icon = system!.network ? Icons.cloud_outlined : Icons.phone_android_rounded;
+    } else {
+      icon = choice.offline?.gender == VoiceGender.female ? Icons.face_3_outlined : Icons.face_outlined;
+    }
     return Card(
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: selected ? const BorderSide(color: Brand.orange, width: 1.5) : BorderSide.none,
+      ),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
         child: Row(
           children: [
             CircleAvatar(
-              backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.12),
-              child: Icon(
-                voice.gender == VoiceGender.female ? Icons.face_3_outlined : Icons.face_outlined,
-                color: theme.colorScheme.primary,
-              ),
+              backgroundColor: Brand.orange.withValues(alpha: 0.15),
+              child: Icon(icon, color: Brand.orange),
             ),
             const SizedBox(width: 12),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      Flexible(
-                        child: Text(
-                          voice.name,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
-                        ),
-                      ),
-                      if (selected) ...[
-                        const SizedBox(width: 6),
-                        const Icon(Icons.check_circle_rounded, size: 18, color: Brand.orange),
-                      ],
-                    ],
+                  Text(
+                    choice.name,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
                   ),
-                  Text(voice.description, style: theme.textTheme.bodySmall),
+                  Text(choice.description, style: theme.textTheme.bodySmall),
                 ],
               ),
             ),
             IconButton(
               tooltip: previewing ? 'Ferma' : 'Ascolta',
-              onPressed: previewing ? reader.stopPreview : () => reader.preview(voice),
+              onPressed: previewing ? reader.stopPreview : () => reader.preview(choice),
               icon: Icon(previewing ? Icons.stop_circle_outlined : Icons.play_circle_outline_rounded),
             ),
-            if (!selected)
-              TextButton(
-                onPressed: () => reader.selectVoice(voice),
-                child: const Text('Usa'),
-              ),
+            if (selected)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Icon(Icons.check_rounded, color: Brand.orange),
+              )
+            else
+              TextButton(onPressed: () => reader.selectVoice(choice), child: const Text('Usa')),
           ],
         ),
       ),
@@ -283,13 +329,7 @@ class _QualityCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text('Qualità delle voci naturali', style: theme.textTheme.titleSmall),
-            const SizedBox(height: 4),
-            Text(
-              '"Alta" rende la voce ancora più pulita, ma il telefono impiega più '
-              'tempo a prepararla. Se la lettura fa delle pause, usa "Normale".',
-              style: theme.textTheme.bodySmall,
-            ),
+            Text('Qualità delle voci scaricate', style: theme.textTheme.titleSmall),
             const SizedBox(height: 10),
             SegmentedButton<VoiceQuality>(
               segments: const [

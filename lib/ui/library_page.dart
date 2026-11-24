@@ -6,9 +6,11 @@ import 'package:flutter/material.dart';
 import '../core/book.dart';
 import '../core/languages.dart';
 import '../services/book_import.dart';
+import '../services/covers.dart';
 import '../services/library.dart';
 import '../services/reader.dart';
 import '../services/voice_store.dart';
+import 'cover_page.dart';
 import 'player_page.dart';
 import 'paste_page.dart';
 import 'theme.dart';
@@ -70,8 +72,12 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
-  Future<void> _openBook(BookMeta meta) async {
-    unawaited(reader.openBook(meta));
+  Future<void> _openBook(BookMeta meta, {bool autoplay = false}) async {
+    if (autoplay) {
+      unawaited(reader.openBook(meta).then((_) => reader.play()));
+    } else {
+      unawaited(reader.openBook(meta));
+    }
     await Navigator.of(context).push(
       MaterialPageRoute<void>(
         builder: (_) => PlayerPage(store: store, reader: reader, library: library),
@@ -178,7 +184,7 @@ class _LibraryPageState extends State<LibraryPage> {
 
   Future<void> _confirmAndAdd(ImportedBook imported) async {
     final sample = imported.chapters.take(3).map((c) => c.text).join('\n');
-    final result = await showModalBottomSheet<(String, String)>(
+    final result = await showModalBottomSheet<(String, String, String)>(
       context: context,
       isScrollControlled: true,
       showDragHandle: true,
@@ -189,13 +195,47 @@ class _LibraryPageState extends State<LibraryPage> {
     );
     if (result == null || !mounted) return;
     imported.title = result.$1;
+    imported.author = result.$3;
     try {
       final meta = await library.add(imported, lang: result.$2);
       if (!mounted) return;
-      await _openBook(meta);
+      // EPUB con copertina e PDF (la prima pagina è quasi sempre la
+      // copertina) ce l'hanno già; per gli altri la si cerca online.
+      if (meta.coverVersion == 0 && meta.format != 'testo') {
+        unawaited(_autoCover(meta));
+      }
+      await _openBook(meta, autoplay: true);
     } catch (e) {
       _snack('Non riesco a salvare il libro: $e');
     }
+  }
+
+  Future<void> _autoCover(BookMeta meta) async {
+    final search = CoverSearch();
+    try {
+      final bytes = await search.findFirst(meta.title, author: meta.author);
+      if (bytes != null && meta.coverVersion == 0) {
+        await library.setCover(meta, bytes);
+      }
+    } catch (_) {
+      // Niente copertina: resta quella disegnata.
+    } finally {
+      search.close();
+    }
+  }
+
+  Future<void> _changeCover(BookMeta b) async {
+    await Navigator.of(context).push<bool>(
+      MaterialPageRoute(builder: (_) => CoverPage(book: b, library: library)),
+    );
+  }
+
+  /// "Continua ad ascoltare": riparte subito da dove eri rimasto.
+  Future<void> _resume(BookMeta b) async {
+    if (reader.book?.id != b.id) {
+      await reader.openBook(b);
+    }
+    await reader.togglePlay();
   }
 
   Future<void> _bookMenu(BookMeta b) async {
@@ -216,9 +256,19 @@ class _LibraryPageState extends State<LibraryPage> {
               ),
             ),
             ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('Cambia copertina'),
+              onTap: () => Navigator.pop(ctx, 'cover'),
+            ),
+            ListTile(
               leading: const Icon(Icons.edit_outlined),
               title: const Text('Cambia titolo'),
               onTap: () => Navigator.pop(ctx, 'rename'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.person_outline_rounded),
+              title: const Text('Cambia autore'),
+              onTap: () => Navigator.pop(ctx, 'author'),
             ),
             ListTile(
               leading: const Icon(Icons.translate_rounded),
@@ -243,6 +293,14 @@ class _LibraryPageState extends State<LibraryPage> {
     );
     if (!mounted || action == null) return;
     switch (action) {
+      case 'cover':
+        await _changeCover(b);
+      case 'author':
+        final t = await askText(context, title: 'Autore', initial: b.author);
+        if (t != null) {
+          b.author = t.trim();
+          await library.update(b);
+        }
       case 'rename':
         final t = await askText(context, title: 'Titolo del libro', initial: b.title);
         if (t != null && t.trim().isNotEmpty) {
@@ -285,9 +343,13 @@ class _LibraryPageState extends State<LibraryPage> {
       builder: (context, _) {
         final books = library.books;
         final theme = Theme.of(context);
+        final current = reader.book ?? (books.isNotEmpty && books.first.lastOpened != null ? books.first : null);
+        final others = [for (final b in books) if (b.id != current?.id) b];
+        final noVoices = reader.availableVoices.isEmpty && reader.systemVoicesLoaded;
+
         return Scaffold(
           appBar: AppBar(
-            title: const Text('D. Voce'),
+            title: const Text('Libreria'),
             actions: [
               IconButton(
                 tooltip: 'Voci',
@@ -303,41 +365,85 @@ class _LibraryPageState extends State<LibraryPage> {
             label: const Text('Aggiungi libro'),
           ),
           bottomNavigationBar: reader.book != null && reader.active
-              ? MiniPlayer(
-                  reader: reader,
-                  onOpen: () => _openBook(reader.book!),
-                )
+              ? MiniPlayer(reader: reader, onOpen: () => _openBook(reader.book!))
               : null,
           body: SafeArea(
             top: false,
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 100),
-              children: [
-                if (!store.anyInstalled) ...[
-                  _NoVoiceBanner(onTap: _openVoices),
-                  const SizedBox(height: 16),
-                ],
+            child: CustomScrollView(
+              slivers: [
+                if (noVoices)
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                    sliver: SliverToBoxAdapter(child: _NoVoiceBanner(onTap: _openVoices)),
+                  ),
                 if (books.isEmpty)
-                  const _EmptyLibrary()
+                  const SliverFillRemaining(hasScrollBody: false, child: _EmptyLibrary())
                 else ...[
-                  Text('La tua libreria', style: theme.textTheme.titleMedium),
-                  const SizedBox(height: 10),
-                  for (final b in books) ...[
-                    _BookCard(
-                      book: b,
-                      playing: reader.book?.id == b.id && reader.playing,
-                      onTap: () => _openBook(b),
-                      onMenu: () => _bookMenu(b),
+                  if (current != null)
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(16, 4, 16, 20),
+                      sliver: SliverToBoxAdapter(
+                        child: _ContinueCard(
+                          book: current,
+                          library: library,
+                          reader: reader,
+                          onOpen: () => _openBook(current),
+                          onPlay: () => _resume(current),
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 10),
-                  ],
+                  if (others.isNotEmpty)
+                    SliverPadding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      sliver: SliverToBoxAdapter(
+                        child: Text(
+                          current == null ? 'I tuoi titoli' : 'Altri titoli',
+                          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                      ),
+                    ),
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                    sliver: SliverGrid(
+                      gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                        maxCrossAxisExtent: 200,
+                        mainAxisSpacing: 18,
+                        crossAxisSpacing: 14,
+                        childAspectRatio: 0.66,
+                      ),
+                      delegate: SliverChildBuilderDelegate(
+                        childCount: others.length,
+                        (context, i) => _BookTile(
+                          book: others[i],
+                          library: library,
+                          playing: reader.book?.id == others[i].id && reader.playing,
+                          onTap: () => _openBook(others[i]),
+                          onMenu: () => _bookMenu(others[i]),
+                        ),
+                      ),
+                    ),
+                  ),
+                  if (current != null)
+                    SliverToBoxAdapter(
+                      child: Center(
+                        child: TextButton.icon(
+                          onPressed: () => _bookMenu(current),
+                          icon: const Icon(Icons.more_horiz_rounded),
+                          label: Text('Opzioni di "${current.title.length > 24 ? '${current.title.substring(0, 24)}…' : current.title}"'),
+                        ),
+                      ),
+                    ),
                 ],
-                const SizedBox(height: 16),
-                Center(
-                  child: Text(
-                    'un\'app Dom Studio',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurface.withValues(alpha: 0.55),
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 96),
+                    child: Center(
+                      child: Text(
+                        'un\'app Dom Studio',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurface.withValues(alpha: 0.5),
+                        ),
+                      ),
                     ),
                   ),
                 ),
@@ -372,7 +478,7 @@ class _NoVoiceBanner extends StatelessWidget {
               const SizedBox(width: 12),
               const Expanded(
                 child: Text(
-                  'Per iniziare scarica le voci (una volta sola, poi funzionano senza internet).',
+                  'Non trovo voci italiane sul telefono. Tocca qui per scegliere o scaricare una voce.',
                 ),
               ),
               const SizedBox(width: 8),
@@ -415,15 +521,135 @@ class _EmptyLibrary extends StatelessWidget {
   }
 }
 
-class _BookCard extends StatelessWidget {
-  const _BookCard({
+class _ContinueCard extends StatelessWidget {
+  const _ContinueCard({
     required this.book,
+    required this.library,
+    required this.reader,
+    required this.onOpen,
+    required this.onPlay,
+  });
+
+  final BookMeta book;
+  final Library library;
+  final Reader reader;
+  final VoidCallback onOpen;
+  final VoidCallback onPlay;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isOpen = reader.book?.id == book.id && reader.chapters.isNotEmpty;
+    final playing = isOpen && reader.playing;
+    final progress = isOpen ? reader.bookProgress : book.progress;
+    final left = Duration(
+      seconds: ((1 - progress) * book.estimatedDuration.inSeconds / reader.speed).round(),
+    );
+    final chapterLine = isOpen
+        ? (reader.chapters[reader.chapterIndex].title.isEmpty
+            ? 'Capitolo ${reader.chapterIndex + 1}'
+            : reader.chapters[reader.chapterIndex].title)
+        : 'Capitolo ${book.chapter + 1} di ${book.chapterCount}';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Continua ad ascoltare',
+          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+        ),
+        const SizedBox(height: 12),
+        Material(
+          color: theme.cardTheme.color,
+          borderRadius: BorderRadius.circular(18),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onOpen,
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  CoverArt(book: book, library: library, size: 112, radius: 10, playing: playing),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          book.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                        if (book.author.isNotEmpty)
+                          Text(
+                            book.author,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall,
+                          ),
+                        const SizedBox(height: 6),
+                        Text(
+                          chapterLine,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: theme.colorScheme.onSurface.withValues(alpha: 0.7),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(3),
+                          child: LinearProgressIndicator(
+                            value: progress,
+                            minHeight: 4,
+                            backgroundColor: Colors.white12,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                progress >= 0.999 ? 'Finito' : 'Mancano ${formatDuration(left)}',
+                                style: theme.textTheme.labelSmall,
+                              ),
+                            ),
+                            IconButton.filled(
+                              onPressed: onPlay,
+                              iconSize: 30,
+                              style: IconButton.styleFrom(
+                                backgroundColor: Brand.orange,
+                                foregroundColor: Brand.ink,
+                              ),
+                              icon: Icon(playing ? Icons.pause_rounded : Icons.play_arrow_rounded),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _BookTile extends StatelessWidget {
+  const _BookTile({
+    required this.book,
+    required this.library,
     required this.playing,
     required this.onTap,
     required this.onMenu,
   });
 
   final BookMeta book;
+  final Library library;
   final bool playing;
   final VoidCallback onTap;
   final VoidCallback onMenu;
@@ -431,77 +657,63 @@ class _BookCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final pct = (book.progress * 100).round();
-    final hours = book.estimatedDuration.inMinutes / 60;
-    final length = hours >= 1
-        ? 'circa ${hours.toStringAsFixed(hours < 10 ? 1 : 0).replaceAll('.', ',')} ore'
-        : 'circa ${book.estimatedDuration.inMinutes} min';
-    final details = [
-      if (book.author.isNotEmpty) book.author,
-      '${book.chapterCount} ${book.chapterCount == 1 ? 'capitolo' : 'capitoli'}',
-      length,
-      if (book.lang != 'it') languageName(book.lang),
-    ].join(' · ');
-
-    return Card(
-      clipBehavior: Clip.antiAlias,
-      child: InkWell(
-        onTap: onTap,
-        onLongPress: onMenu,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 4, 12),
-          child: Row(
-            children: [
-              BookCover(title: book.title, format: book.format, playing: playing),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      book.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+    return InkWell(
+      onTap: onTap,
+      onLongPress: onMenu,
+      borderRadius: BorderRadius.circular(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          LayoutBuilder(
+            builder: (context, c) => Stack(
+              children: [
+                CoverArt(book: book, library: library, size: c.maxWidth, playing: playing),
+                Positioned(
+                  top: 2,
+                  right: 2,
+                  child: Material(
+                    color: Colors.black38,
+                    shape: const CircleBorder(),
+                    child: InkWell(
+                      customBorder: const CircleBorder(),
+                      onTap: onMenu,
+                      child: const Padding(
+                        padding: EdgeInsets.all(4),
+                        child: Icon(Icons.more_vert_rounded, size: 18, color: Colors.white),
+                      ),
                     ),
-                    const SizedBox(height: 4),
-                    Text(
-                      details,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      children: [
-                        Expanded(
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(4),
-                            child: LinearProgressIndicator(
-                              value: book.progress,
-                              minHeight: 5,
-                              backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.12),
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          book.progress >= 0.999 ? 'Finito' : '$pct%',
-                          style: theme.textTheme.labelSmall,
-                        ),
-                      ],
-                    ),
-                  ],
+                  ),
                 ),
-              ),
-              IconButton(
-                tooltip: 'Opzioni',
-                onPressed: onMenu,
-                icon: const Icon(Icons.more_vert_rounded),
-              ),
-            ],
+              ],
+            ),
           ),
-        ),
+          const SizedBox(height: 6),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(2),
+            child: LinearProgressIndicator(
+              value: book.progress,
+              minHeight: 3,
+              backgroundColor: Colors.white12,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            book.title,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelLarge?.copyWith(fontWeight: FontWeight.w700),
+          ),
+          Text(
+            book.progress >= 0.999
+                ? 'Finito'
+                : book.progress > 0
+                    ? '${(book.progress * 100).round()}% · ${book.author}'
+                    : (book.author.isEmpty ? languageName(book.lang) : book.author),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall,
+          ),
+        ],
       ),
     );
   }
@@ -520,11 +732,14 @@ class _ConfirmSheet extends StatefulWidget {
 class _ConfirmSheetState extends State<_ConfirmSheet> {
   late final TextEditingController _title =
       TextEditingController(text: widget.imported.title);
+  late final TextEditingController _author =
+      TextEditingController(text: widget.imported.author);
   late String _lang = widget.guessedLang;
 
   @override
   void dispose() {
     _title.dispose();
+    _author.dispose();
     super.dispose();
   }
 
@@ -555,6 +770,15 @@ class _ConfirmSheetState extends State<_ConfirmSheet> {
               controller: _title,
               textCapitalization: TextCapitalization.sentences,
               decoration: const InputDecoration(labelText: 'Titolo'),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: _author,
+              textCapitalization: TextCapitalization.words,
+              decoration: const InputDecoration(
+                labelText: 'Autore (facoltativo)',
+                helperText: 'Serve a trovare la copertina giusta',
+              ),
             ),
             const SizedBox(height: 12),
             InputDecorator(
@@ -601,6 +825,7 @@ class _ConfirmSheetState extends State<_ConfirmSheet> {
               onPressed: () => Navigator.pop(context, (
                 _title.text.trim().isEmpty ? widget.imported.title : _title.text.trim(),
                 _lang,
+                _author.text.trim(),
               )),
               icon: const Icon(Icons.headphones_rounded),
               label: const Text('Aggiungi e ascolta'),

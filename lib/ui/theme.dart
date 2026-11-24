@@ -14,12 +14,12 @@ ThemeData buildTheme(Brightness brightness) {
     seedColor: Brand.blue,
     brightness: brightness,
   ).copyWith(
-    primary: dark ? const Color(0xFFB4C5FF) : Brand.blue,
+    primary: dark ? Brand.orange : Brand.blue,
     onPrimary: dark ? Brand.ink : Colors.white,
     secondary: Brand.orange,
     onSecondary: Brand.ink,
-    surface: dark ? const Color(0xFF12161F) : Brand.paper,
-    onSurface: dark ? const Color(0xFFE8E6E1) : Brand.ink,
+    surface: dark ? const Color(0xFF0D1018) : Brand.paper,
+    onSurface: dark ? const Color(0xFFEDEBE6) : Brand.ink,
   );
 
   final base = ThemeData(
@@ -45,7 +45,7 @@ ThemeData buildTheme(Brightness brightness) {
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
-      fillColor: dark ? const Color(0xFF1B2130) : Colors.white,
+      fillColor: dark ? const Color(0xFF1A1F2B) : Colors.white,
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(18),
         borderSide: BorderSide.none,
@@ -53,14 +53,22 @@ ThemeData buildTheme(Brightness brightness) {
       contentPadding: const EdgeInsets.all(16),
     ),
     cardTheme: CardThemeData(
-      color: dark ? const Color(0xFF1B2130) : Colors.white,
+      color: dark ? const Color(0xFF181C27) : Colors.white,
       elevation: 0,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       margin: EdgeInsets.zero,
     ),
     sliderTheme: base.sliderTheme.copyWith(
-      activeTrackColor: scheme.primary,
+      activeTrackColor: Brand.orange,
+      inactiveTrackColor: scheme.onSurface.withValues(alpha: 0.18),
       thumbColor: Brand.orange,
+      trackHeight: 3,
+      overlayShape: SliderComponentShape.noOverlay,
+      thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7),
     ),
+    bottomSheetTheme: BottomSheetThemeData(
+      backgroundColor: dark ? const Color(0xFF151A24) : Brand.paper,
+    ),
+    progressIndicatorTheme: const ProgressIndicatorThemeData(color: Brand.orange),
   );
 }

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
@@ -88,10 +89,58 @@ class Library extends ChangeNotifier {
       chapterCount: book.chapters.length,
       totalChars: book.totalChars,
     );
+    final cover = book.coverBytes;
+    if (cover != null) {
+      if (book.format == 'pdf') {
+        // La prima pagina del PDF resta disponibile come copertina di riserva.
+        await File(firstPagePath(id)).writeAsBytes(cover);
+      }
+      await _writeCover(meta, cover);
+    }
     _books.add(meta);
     await _saveIndex();
     notifyListeners();
     return meta;
+  }
+
+  // ---------------------------------------------------------------------
+  // Copertine
+
+  /// Percorso della copertina (null se il libro non ne ha). Il nome cambia
+  /// a ogni nuova copertina, così l'immagine si aggiorna subito.
+  String? coverPath(BookMeta b) =>
+      b.coverVersion == 0 ? null : p.join(_root.path, '${b.id}_cover_${b.coverVersion}.img');
+
+  /// La prima pagina di un PDF salvata durante l'importazione, se c'è.
+  String firstPagePath(String id) => p.join(_root.path, '${id}_p1.png');
+
+  Future<void> _writeCover(BookMeta b, Uint8List bytes) async {
+    final old = coverPath(b);
+    b.coverVersion++;
+    await File(coverPath(b)!).writeAsBytes(bytes, flush: true);
+    if (old != null) {
+      try {
+        await File(old).delete();
+      } catch (_) {}
+    }
+  }
+
+  Future<void> setCover(BookMeta b, Uint8List bytes) async {
+    await _writeCover(b, bytes);
+    await _saveIndex();
+    notifyListeners();
+  }
+
+  Future<void> removeCover(BookMeta b) async {
+    final old = coverPath(b);
+    b.coverVersion = 0;
+    if (old != null) {
+      try {
+        await File(old).delete();
+      } catch (_) {}
+    }
+    await _saveIndex();
+    notifyListeners();
   }
 
   /// Carica i capitoli di un libro (in un isolate: i libri sono grandi).
@@ -105,6 +154,12 @@ class Library extends ChangeNotifier {
     _books.removeWhere((b) => b.id == id);
     final f = _bookFile(id);
     if (f.existsSync()) await f.delete();
+    // Copertine e prima pagina.
+    try {
+      for (final e in _root.listSync()) {
+        if (p.basename(e.path).startsWith('${id}_')) e.deleteSync();
+      }
+    } catch (_) {}
     await _saveIndex();
     notifyListeners();
   }

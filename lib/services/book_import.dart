@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
+import 'dart:ui' as ui;
 
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -140,11 +142,54 @@ Future<ImportedBook> _importPdf(
 
     final chapters = await _pdfInIsolate(pages, outline);
     if (chapters.isEmpty) throw ImportException('Nel PDF non ho trovato testo da leggere.');
-    return ImportedBook(title: title, author: '', format: 'pdf', chapters: chapters);
+    Uint8List? cover;
+    try {
+      cover = await _renderFirstPage(doc.pages.first);
+    } catch (_) {
+      // Senza anteprima si va avanti lo stesso.
+    }
+    return ImportedBook(
+      title: title,
+      author: '',
+      format: 'pdf',
+      chapters: chapters,
+      coverBytes: cover,
+    );
   } finally {
     await doc?.dispose();
     try {
       await tmp.delete();
     } catch (_) {}
+  }
+}
+
+/// Disegna la prima pagina del PDF come immagine PNG (copertina di riserva).
+Future<Uint8List?> _renderFirstPage(PdfPage page) async {
+  const targetWidth = 600;
+  final ratio = page.height / page.width;
+  final w = targetWidth;
+  final h = (targetWidth * ratio).round();
+  if (h <= 0 || h > 3000) return null;
+  final img = await page.render(
+    fullWidth: w.toDouble(),
+    fullHeight: h.toDouble(),
+    backgroundColor: 0xffffffff,
+  );
+  if (img == null) return null;
+  try {
+    final completer = Completer<ui.Image>();
+    ui.decodeImageFromPixels(
+      img.pixels,
+      img.width,
+      img.height,
+      ui.PixelFormat.bgra8888,
+      completer.complete,
+    );
+    final image = await completer.future;
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+    return data?.buffer.asUint8List();
+  } finally {
+    img.dispose();
   }
 }

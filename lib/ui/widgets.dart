@@ -1,6 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
+import '../core/book.dart';
+
 import '../core/languages.dart';
+import '../services/library.dart';
 import '../services/reader.dart';
 import 'theme.dart';
 
@@ -33,65 +38,115 @@ String formatClock(Duration d) {
   return h > 0 ? '$h:$mm:$ss' : '$mm:$ss';
 }
 
-/// Una piccola copertina colorata con l'iniziale del titolo.
-class BookCover extends StatelessWidget {
-  const BookCover({
+/// La copertina di un libro: l'immagine salvata o, se manca, una copertina
+/// disegnata con titolo e autore.
+class CoverArt extends StatelessWidget {
+  const CoverArt({
     super.key,
-    required this.title,
-    required this.format,
+    required this.book,
+    required this.library,
+    this.size = 120,
+    this.radius = 10,
     this.playing = false,
-    this.size = 56,
   });
 
-  final String title;
-  final String format;
-  final bool playing;
+  final BookMeta book;
+  final Library library;
   final double size;
+  final double radius;
+  final bool playing;
 
-  static const _colors = [
-    Brand.blue,
-    Color(0xFF2E6B5E),
-    Color(0xFF8A3B1D),
-    Color(0xFF5B3C88),
-    Color(0xFF6B5B1D),
-    Color(0xFF1D6B8A),
+  static const _palettes = [
+    [Color(0xFF1D3A8A), Color(0xFF0E1A42)],
+    [Color(0xFF2E6B5E), Color(0xFF123029)],
+    [Color(0xFF8A3B1D), Color(0xFF3E180A)],
+    [Color(0xFF5B3C88), Color(0xFF251543)],
+    [Color(0xFF6B5B1D), Color(0xFF2E260A)],
+    [Color(0xFF1D6B8A), Color(0xFF0A2E3E)],
   ];
 
   @override
   Widget build(BuildContext context) {
-    final letter = title.trim().isEmpty ? '?' : title.trim().characters.first.toUpperCase();
-    final color = _colors[title.hashCode.abs() % _colors.length];
+    final path = library.coverPath(book);
+    Widget child;
+    if (path != null) {
+      child = Image.file(
+        File(path),
+        width: size,
+        height: size,
+        fit: BoxFit.cover,
+        cacheWidth: (size * MediaQuery.devicePixelRatioOf(context)).round(),
+        errorBuilder: (_, __, ___) => _placeholder(),
+      );
+    } else {
+      child = _placeholder();
+    }
     return SizedBox(
       width: size,
-      height: size * 1.3,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(10),
-        ),
+      height: size,
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(radius),
         child: Stack(
+          fit: StackFit.expand,
           children: [
-            Center(
+            child,
+            if (playing)
+              Positioned(
+                right: 6,
+                bottom: 6,
+                child: Container(
+                  padding: const EdgeInsets.all(4),
+                  decoration: const BoxDecoration(color: Brand.orange, shape: BoxShape.circle),
+                  child: const Icon(Icons.graphic_eq_rounded, color: Brand.ink, size: 14),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _placeholder() {
+    final colors = _palettes[book.title.hashCode.abs() % _palettes.length];
+    final small = size < 80;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: colors,
+        ),
+      ),
+      child: Padding(
+        padding: EdgeInsets.all(size * 0.09),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(width: size * 0.18, height: 3, color: Brand.orange),
+            SizedBox(height: size * 0.06),
+            Expanded(
               child: Text(
-                letter,
+                small ? book.title.characters.take(1).toString().toUpperCase() : book.title,
+                maxLines: small ? 1 : 4,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: Brand.paper,
                   fontWeight: FontWeight.w800,
-                  fontSize: size * 0.45,
+                  height: 1.15,
+                  fontSize: small ? size * 0.42 : size * 0.11,
                 ),
               ),
             ),
-            Positioned(
-              right: 6,
-              bottom: 6,
-              child: playing
-                  ? const Icon(Icons.graphic_eq_rounded, color: Brand.orange, size: 18)
-                  : Container(
-                      width: 7,
-                      height: 7,
-                      decoration: const BoxDecoration(color: Brand.orange, shape: BoxShape.circle),
-                    ),
-            ),
+            if (!small && book.author.isNotEmpty)
+              Text(
+                book.author,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  color: Brand.paper.withValues(alpha: 0.75),
+                  fontSize: size * 0.075,
+                ),
+              ),
           ],
         ),
       ),
@@ -113,47 +168,61 @@ class MiniPlayer extends StatelessWidget {
     final ch = reader.chapters.isEmpty ? null : reader.chapters[reader.chapterIndex];
     final playing = reader.playing;
     return Material(
-      color: theme.cardTheme.color,
-      elevation: 6,
+      color: const Color(0xFF1C2230),
       child: SafeArea(
         top: false,
         child: InkWell(
           onTap: onOpen,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
-            child: Row(
-              children: [
-                BookCover(title: b.title, format: b.format, playing: playing, size: 34),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        b.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              LinearProgressIndicator(
+                value: reader.bookProgress,
+                minHeight: 2,
+                backgroundColor: Colors.white12,
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+                child: Row(
+                  children: [
+                    CoverArt(book: b, library: reader.library, size: 44, radius: 6),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            b.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          if (ch != null)
+                            Text(
+                              ch.title.isEmpty ? 'Capitolo ${reader.chapterIndex + 1}' : ch.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall,
+                            ),
+                        ],
                       ),
-                      if (ch != null)
-                        Text(
-                          ch.title.isEmpty ? 'Capitolo ${reader.chapterIndex + 1}' : ch.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall,
-                        ),
-                    ],
-                  ),
+                    ),
+                    IconButton(
+                      tooltip: 'Indietro 30 secondi',
+                      onPressed: () => reader.skipBy(const Duration(seconds: -30)),
+                      icon: const Icon(Icons.replay_30_rounded),
+                    ),
+                    IconButton(
+                      iconSize: 36,
+                      onPressed: reader.togglePlay,
+                      icon: Icon(playing ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded),
+                      color: Brand.orange,
+                    ),
+                  ],
                 ),
-                IconButton(
-                  iconSize: 34,
-                  onPressed: reader.togglePlay,
-                  icon: Icon(playing ? Icons.pause_circle_filled_rounded : Icons.play_circle_fill_rounded),
-                  color: theme.colorScheme.primary,
-                ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
