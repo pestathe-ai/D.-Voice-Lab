@@ -52,6 +52,9 @@ const _esc = HtmlEscape(HtmlEscapeMode.element);
 /// il collegamento per tornare a D. Voce; [nextUrl] costruisce il link alla
 /// pagina successiva.
 EdgePage buildEdgePage({
+  required String bookId,
+  required int positionAt,
+  required String bookUrl,
   required String bookTitle,
   required List<Chapter> chapters,
   required int chapter,
@@ -115,6 +118,11 @@ EdgePage buildEdgePage({
   p { margin:0 0 16px; }
   .end { margin-top:40px; text-align:center; font-family:sans-serif; }
   a { color:#f28c38; }
+  [data-c] { cursor:pointer; }
+  .mark { outline:2px solid #f28c38; outline-offset:4px; border-radius:4px; }
+  #toast { position:fixed; left:50%; bottom:76px; transform:translateX(-50%); background:#222a3b;
+           color:#ede9e1; font:14px sans-serif; padding:10px 14px; border-radius:12px;
+           opacity:0; transition:opacity .3s; pointer-events:none; }
   #back { position:fixed; right:14px; bottom:14px; background:#f28c38; color:#14213d;
           font:700 15px sans-serif; padding:12px 16px; border-radius:24px;
           text-decoration:none; box-shadow:0 4px 14px #0008; }
@@ -124,11 +132,62 @@ EdgePage buildEdgePage({
 <article id="book">
 $body$end
 </article>
+<div id="toast" aria-hidden="true"></div>
 <a id="back" href="${_esc.convert(returnUrl)}" aria-hidden="true">Torna a D. Voce</a>
 <script>
 (function () {
+  var KEY = 'dvoce:' + ${jsonEncode(bookId)};
+  var SERVER_AT = $positionAt;
+  var BOOK_URL = ${jsonEncode(bookUrl)};
+  var POS_URL = ${jsonEncode(posUrl)};
+  var RETURN_URL = ${jsonEncode(returnUrl)};
+
+  // Il segno salvato qui da Edge è più recente di quello di D. Voce?
+  // Allora si riparte da lì (D. Voce prepara la pagina da quel punto).
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || 'null');
+    var first = document.querySelector('[data-c]');
+    if (saved && saved.t > SERVER_AT && first &&
+        (String(saved.c) !== first.getAttribute('data-c') || String(saved.k) !== first.getAttribute('data-k'))) {
+      location.replace(BOOK_URL + '&c=' + saved.c + '&k=' + saved.k + '&t=' + saved.t + '&fromls=1');
+      return;
+    }
+  } catch (e) {}
+
   var last = '';
+  var pinned = null;
+  function toast(msg) {
+    var t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.opacity = 1;
+    setTimeout(function () { t.style.opacity = 0; }, 1800);
+  }
+  function save(c, k, force) {
+    var now = Date.now();
+    var key = c + ':' + k;
+    document.getElementById('back').href =
+      RETURN_URL.replace('__C__', c).replace('__K__', k).replace('__T__', now);
+    if (key === last && !force) return;
+    last = key;
+    try { localStorage.setItem(KEY, JSON.stringify({ c: +c, k: +k, t: now })); } catch (e) {}
+    var url = POS_URL + '&c=' + c + '&k=' + k + '&t=' + now;
+    try {
+      if (navigator.sendBeacon) { navigator.sendBeacon(url); }
+      else { fetch(url, { cache: 'no-store' }).catch(function () {}); }
+    } catch (e) {}
+  }
+  // Il paragrafo che si sta leggendo: quello evidenziato da Edge, se si
+  // riesce a vederlo, altrimenti il primo visibile in alto.
   function current() {
+    try {
+      var sel = window.getSelection && window.getSelection();
+      if (sel && sel.rangeCount && !sel.isCollapsed) {
+        var n = sel.getRangeAt(0).startContainer;
+        while (n && n.nodeType !== 1) n = n.parentNode;
+        while (n && !(n.getAttribute && n.getAttribute('data-c'))) n = n.parentNode;
+        if (n) return n;
+      }
+    } catch (e) {}
     var els = document.querySelectorAll('[data-c]');
     var limit = window.innerHeight * 0.3;
     var pick = els.length ? els[0] : null;
@@ -138,19 +197,31 @@ $body$end
     return pick;
   }
   function report() {
+    if (pinned) return;
     var el = current();
-    if (!el) return;
-    var c = el.getAttribute('data-c'), k = el.getAttribute('data-k');
-    var back = document.getElementById('back');
-    back.href = ${jsonEncode(returnUrl)}.replace('__C__', c).replace('__K__', k);
-    var key = c + ':' + k;
-    if (key === last) return;
-    last = key;
-    try { fetch(${jsonEncode(posUrl)} + '&c=' + c + '&k=' + k, { cache: 'no-store' }).catch(function () {}); } catch (e) {}
+    if (el) save(el.getAttribute('data-c'), el.getAttribute('data-k'), false);
   }
-  setInterval(report, 4000);
-  window.addEventListener('scroll', function () { setTimeout(report, 500); }, { passive: true });
-  setTimeout(report, 1000);
+  // Tocca un paragrafo per mettere il segno lì.
+  document.getElementById('book').addEventListener('click', function (ev) {
+    var n = ev.target;
+    while (n && !(n.getAttribute && n.getAttribute('data-c'))) n = n.parentNode;
+    if (!n || ev.target.tagName === 'A') return;
+    var old = document.querySelector('.mark');
+    if (old) old.classList.remove('mark');
+    n.classList.add('mark');
+    pinned = n;
+    save(n.getAttribute('data-c'), n.getAttribute('data-k'), true);
+    toast('Segno messo qui');
+    setTimeout(function () { pinned = null; }, 60000);
+  });
+  setInterval(report, 3000);
+  window.addEventListener('scroll', function () { setTimeout(report, 400); }, { passive: true });
+  document.addEventListener('selectionchange', function () { setTimeout(report, 200); });
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'hidden') report();
+  });
+  window.addEventListener('pagehide', report);
+  setTimeout(report, 1500);
 })();
 </script>
 </body>

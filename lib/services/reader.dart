@@ -466,8 +466,7 @@ class Reader extends ChangeNotifier {
   void _savePosition() {
     final b = book;
     if (b == null) return;
-    b.chapter = chapterIndex;
-    b.chunk = index;
+    b.setPosition(chapterIndex, index);
     b.progress = bookProgress;
     b.lastOpened = DateTime.now();
     unawaited(library.update(b, notify: false));
@@ -889,8 +888,9 @@ class Reader extends ChangeNotifier {
     final b = book;
     final bridge = edge;
     if (b == null || bridge == null) return;
-    _savePosition();
-    final ok = await bridge.open(b, chapterIndex, index);
+    // Si parte dal segno salvato: è aggiornato sia dal lettore interno sia
+    // da Edge, e la pagina stessa sa riprendere da un punto più recente.
+    final ok = await bridge.open(b, b.chapter, b.chunk);
     edgeMissing = !ok;
     if (!ok) {
       error = 'Per le voci Microsoft serve l\'app Microsoft Edge: installala dal Play Store.';

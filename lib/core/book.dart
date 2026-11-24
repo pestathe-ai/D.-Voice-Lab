@@ -34,6 +34,7 @@ class BookMeta {
     this.lastOpened,
     this.voiceId,
     this.coverVersion = 0,
+    this.positionAt = 0,
   });
 
   final String id;
@@ -59,6 +60,18 @@ class BookMeta {
   /// 0 = nessuna copertina; cresce ogni volta che la copertina cambia.
   int coverVersion;
 
+  /// Quando è stato spostato il segno l'ultima volta (millisecondi).
+  int positionAt;
+
+  /// Sposta il segno (capitolo e frase) e ne annota l'ora.
+  void setPosition(int newChapter, int newChunk, {int? at}) {
+    if (newChapter != chapter || newChunk != chunk) {
+      chapter = newChapter;
+      chunk = newChunk;
+      positionAt = at ?? DateTime.now().millisecondsSinceEpoch;
+    }
+  }
+
   /// Durata stimata dell'ascolto (circa 14 caratteri al secondo).
   Duration get estimatedDuration => Duration(seconds: totalChars ~/ 14);
 
@@ -77,6 +90,7 @@ class BookMeta {
         'lastOpened': lastOpened?.toIso8601String(),
         'voiceId': voiceId,
         'coverVersion': coverVersion,
+        'positionAt': positionAt,
       };
 
   factory BookMeta.fromJson(Map<String, Object?> j) => BookMeta(
@@ -94,6 +108,7 @@ class BookMeta {
         lastOpened: DateTime.tryParse((j['lastOpened'] as String?) ?? ''),
         voiceId: j['voiceId'] as String?,
         coverVersion: (j['coverVersion'] as num?)?.toInt() ?? 0,
+        positionAt: (j['positionAt'] as num?)?.toInt() ?? 0,
       );
 }
 

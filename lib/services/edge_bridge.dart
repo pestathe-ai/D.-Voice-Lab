@@ -5,6 +5,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/book.dart';
 import '../core/edge_page.dart';
@@ -27,7 +28,11 @@ class EdgeBridge {
   void Function(String bookId, int chapter, int chunk)? onPosition;
 
   HttpServer? _server;
-  final String _token = _randomToken();
+
+  /// Porta fissa: così l'indirizzo della pagina resta uguale e Edge può
+  /// ricordare il segno anche dopo un riavvio di D. Voce.
+  static const int _preferredPort = 47913;
+  String _token = _randomToken();
 
   static String _randomToken() {
     final r = math.Random.secure();
@@ -35,6 +40,15 @@ class EdgeBridge {
   }
 
   Future<void> init() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString('edgeToken');
+      if (saved != null && saved.length >= 16) {
+        _token = saved;
+      } else {
+        await prefs.setString('edgeToken', _token);
+      }
+    } catch (_) {}
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'link') handleReturnLink('${call.arguments}');
       return null;
@@ -50,7 +64,12 @@ class EdgeBridge {
   Future<int> _ensureServer() async {
     final existing = _server;
     if (existing != null) return existing.port;
-    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    HttpServer server;
+    try {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, _preferredPort);
+    } on SocketException {
+      server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    }
     server.listen(_handle, onError: (Object _) {});
     _server = server;
     return server.port;
@@ -59,7 +78,7 @@ class EdgeBridge {
   String _base(int port) => 'http://127.0.0.1:$port/$_token';
 
   String returnUrl(String bookId) =>
-      'intent://pos?id=$bookId&c=__C__&k=__K__#Intent;scheme=dvoce;package=dev.dvoce.d_voce;end';
+      'intent://pos?id=$bookId&c=__C__&k=__K__&t=__T__#Intent;scheme=dvoce;package=dev.dvoce.d_voce;end';
 
   Future<void> _handle(HttpRequest req) async {
     final res = req.response;
@@ -74,9 +93,10 @@ class EdgeBridge {
       final id = q['id'] ?? '';
       final c = int.tryParse(q['c'] ?? '') ?? 0;
       final k = int.tryParse(q['k'] ?? '') ?? 0;
+      final at = int.tryParse(q['t'] ?? '');
       final route = segs.length > 1 ? segs[1] : '';
       if (route == 'pos') {
-        await _savePosition(id, c, k);
+        await _savePosition(id, c, k, at: at);
         res.statusCode = HttpStatus.noContent;
         await res.close();
         return;
@@ -91,6 +111,9 @@ class EdgeBridge {
         final chapters = await library.loadChapters(id);
         final port = _server!.port;
         final page = buildEdgePage(
+          bookId: id,
+          positionAt: q['fromls'] == '1' ? 1 << 52 : meta.positionAt,
+          bookUrl: '${_base(port)}/book?id=$id',
           bookTitle: meta.title,
           chapters: chapters,
           chapter: c.clamp(0, math.max(0, chapters.length - 1)).toInt(),
@@ -103,7 +126,7 @@ class EdgeBridge {
         res.headers.set(HttpHeaders.cacheControlHeader, 'no-store');
         res.add(utf8.encode(page.html));
         await res.close();
-        unawaited(_savePosition(id, c, k));
+        unawaited(_savePosition(id, c, k, at: at));
         return;
       }
       res.statusCode = HttpStatus.notFound;
@@ -116,12 +139,13 @@ class EdgeBridge {
     }
   }
 
-  Future<void> _savePosition(String id, int chapter, int chunk) async {
+  Future<void> _savePosition(String id, int chapter, int chunk, {int? at}) async {
     final meta = library.byId(id);
     if (meta == null || chapter < 0 || chunk < 0) return;
     if (meta.chapter == chapter && meta.chunk == chunk) return;
-    meta.chapter = chapter;
-    meta.chunk = chunk;
+    // Un segno più vecchio di quello già salvato non lo sovrascrive.
+    if (at != null && at < meta.positionAt) return;
+    meta.setPosition(chapter, chunk, at: at);
     meta.lastOpened = DateTime.now();
     if (meta.chapterCount > 0) {
       meta.progress = (chapter / meta.chapterCount).clamp(0.0, 1.0).toDouble();
@@ -137,8 +161,9 @@ class EdgeBridge {
     final id = uri.queryParameters['id'];
     final c = int.tryParse(uri.queryParameters['c'] ?? '');
     final k = int.tryParse(uri.queryParameters['k'] ?? '');
+    final t = int.tryParse(uri.queryParameters['t'] ?? '');
     if (id == null || c == null || k == null) return;
-    unawaited(_savePosition(id, c, k));
+    unawaited(_savePosition(id, c, k, at: t));
   }
 
   /// Apre il libro in Edge dal punto indicato. Restituisce false se Edge

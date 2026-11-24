@@ -14,6 +14,9 @@ void main() {
   ];
 
   EdgePage build(int c, int k, {int max = kEdgePageChars}) => buildEdgePage(
+        bookId: '1',
+        positionAt: 123,
+        bookUrl: 'http://x/book?id=1',
         bookTitle: 'Libro',
         chapters: chapters,
         chapter: c,
@@ -39,6 +42,9 @@ void main() {
     expect(page.html, contains('Il secondo capitolo inizia qui.'));
     expect(page.html, contains('Fine del libro.'));
     expect(page.nextChapter, isNull);
+    expect(page.html, contains('var SERVER_AT = 123;'));
+    expect(page.html, contains("localStorage.getItem(KEY)"));
+    expect(page.html, isNot(contains(r'$')), reason: 'nessuna interpolazione dimenticata');
   });
 
   test('riparte dal paragrafo dove eri arrivato', () {
